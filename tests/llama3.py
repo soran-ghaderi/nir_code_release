@@ -1,7 +1,7 @@
 import torch
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
-from main import RMSNorm
+from main import RMSNorm, precompute_freqs_cis
 
 
 def test_rmsnorm():
@@ -41,9 +41,35 @@ def test_inheritance():
     print(output_data)
 
 
+def test_precompute_freqs_cis():
+    # Test parameters
+    dim = 16
+    end = 10
+    theta = 10000.0
+
+    # Run the function
+    result = precompute_freqs_cis(dim, end, theta)
+
+    # Check the shape of the output
+    expected_shape = (end, dim // 2)
+    assert result.shape == expected_shape, f"Expected shape {expected_shape}, but got {result.shape}"
+
+    # Check the dtype of the output
+    assert result.dtype == torch.complex64, f"Expected dtype torch.complex64, but got {result.dtype}"
+
+    # Check some basic value properties
+    print("Are all magnitudes close to 1?", torch.allclose(result.abs(), torch.ones_like(result.abs()), atol=1e-5))
+
+    assert torch.allclose(result.abs(), torch.ones_like(result.abs()), atol=1e-5), "All magnitudes should be 1"
+
+    # Additional checks can be added here
+    print("All tests passed!")
+    print(result)
+    return result
 
 
 # Run the test function
 if __name__ == "__main__":
-    test_rmsnorm()
-    test_inheritance()
+    # test_rmsnorm()
+    # test_inheritance()
+    test_precompute_freqs_cis()

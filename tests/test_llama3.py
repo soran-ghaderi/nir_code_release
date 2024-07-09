@@ -1,7 +1,7 @@
 import torch
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
-from main import RMSNorm, precompute_freqs_cis
+from main import RMSNorm, precompute_freqs_cis, reshape_for_broadcast
 
 
 def test_rmsnorm():
@@ -67,6 +67,20 @@ def test_precompute_freqs_cis():
     print(result)
     return result
 
+def test_reshape_for_broadcast():
+    # Test case 1: 3D tensor
+    x1 = torch.randn(2, 4, 6)  # Shape: [batch_size, sequence_length, dim]
+    freqs_cis1 = torch.randn(4, 6)  # Shape: [sequence_length, dim]
+    reshaped1 = reshape_for_broadcast(freqs_cis1, x1)
+    assert reshaped1.shape == (1, 4, 6), f"Expected shape (1, 4, 1, 6), but got {reshaped1.shape}"
+
+    # Test case 2: 4D tensor
+    x2 = torch.randn(2, 4, 5, 6)  # Shape: [batch_size, sequence_length, channels, dim]
+    freqs_cis2 = torch.randn(4, 6)  # Shape: [sequence_length, dim]
+    reshaped2 = reshape_for_broadcast(freqs_cis2, x2)
+    assert reshaped2.shape == (1, 4, 1, 6), f"Expected shape (1, 4, 1, 1, 6), but got {reshaped2.shape}"
+
+    print("All tests passed.")
 
 
 
@@ -74,4 +88,6 @@ def test_precompute_freqs_cis():
 if __name__ == "__main__":
     # test_rmsnorm()
     # test_inheritance()
-    test_precompute_freqs_cis()
+    # test_precompute_freqs_cis()
+    test_reshape_for_broadcast()
+

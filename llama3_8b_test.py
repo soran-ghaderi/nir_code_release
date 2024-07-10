@@ -27,10 +27,10 @@ from transformers import AutoTokenizer, LlamaForCausalLM
 model = LlamaForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name, token=token_s)
 tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=model_name, token=token_s)
 
-prompt = "Hey, are you conscious? Can you talk to me?"
+prompt = """hello world!"""
 inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
 # Generate
-generate_ids = model.generate(inputs.input_ids, attention_mask=inputs.attention_mask, max_length=100)
+generate_ids = model.generate(inputs.input_ids, attention_mask=inputs.attention_mask, max_length=50)
 output = tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
 print(output)

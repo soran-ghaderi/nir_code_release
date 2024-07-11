@@ -91,4 +91,3 @@ state_dict = model.state_dict()
 # Print the first 20 layer names
 print("dict: ", json.dumps(list(state_dict.keys())[:20], indent=4))
 print(state_dict.keys())
-prompt = "once upon a time"

@@ -2,7 +2,7 @@ import pytest
 import torch
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
-from main import RMSNorm, precompute_freqs_cis, reshape_for_broadcast, apply_rotary_emb
+from main import RMSNorm, precompute_freqs_cis, reshape_for_broadcast, apply_rotary_emb, repeat_kv
 
 
 def test_rmsnorm():
@@ -84,29 +84,39 @@ def test_reshape_for_broadcast():
     print("All tests passed.")
 
 
-# def test_apply_rotary_emb():
-#     # Test case: 3D tensors
-#     batch_size = 2
-#     seq_len = 4
-#     dim = 6
-#     xq = torch.randn(batch_size, seq_len, dim)
-#     xk = torch.randn(batch_size, seq_len, dim)
-#     freqs_cis = torch.polar(torch.ones(seq_len, dim // 2),
-#                             torch.arange(seq_len * (dim // 2)).reshape(seq_len, dim // 2).float())
-#
-#     xq_out, xk_out = apply_rotary_emb(xq, xk, freqs_cis)
-#
-#     assert xq_out.shape == xq.shape, f"Expected xq_out shape {xq.shape}, but got {xq_out.shape}"
-#     assert xk_out.shape == xk.shape, f"Expected xk_out shape {xk.shape}, but got {xk_out.shape}"
-#
-#     # Verify that the rotary embeddings are applied correctly
-#     # Check if the output tensors have similar properties to the input
-#     assert torch.allclose(xq_out.mean(), xq.mean(), atol=1e-5), "Mean of xq_out differs from xq"
-#     assert torch.allclose(xk_out.mean(), xk.mean(), atol=1e-5), "Mean of xk_out differs from xk"
-#     assert torch.allclose(xq_out.std(), xq.std(), atol=1e-5), "Std of xq_out differs from xq"
-#     assert torch.allclose(xk_out.std(), xk.std(), atol=1e-5), "Std of xk_out differs from xk"
-#
-#     print("All tests passed.")
+def test_repeat_kv_no_repetition():
+    batch_size = 2
+    seq_len = 4
+    n_kv_heads = 3
+    head_dim = 5
+    x = torch.randn(batch_size, seq_len, n_kv_heads, head_dim)
+    n_rep = 1
+    result = repeat_kv(x, n_rep)
+    assert result.shape == x.shape, f"Expected shape {x.shape}, but got {result.shape}"
+    assert torch.equal(result, x), "Output tensor should be identical to input tensor when n_rep is 1"
+
+    print('passed')
+
+
+# Test case for repetition
+def test_repeat_kv_with_repetition():
+    batch_size = 2
+    seq_len = 4
+    n_kv_heads = 3
+    head_dim = 5
+    x = torch.randn(batch_size, seq_len, n_kv_heads, head_dim)
+    n_rep = 2
+    result = repeat_kv(x, n_rep)
+    expected_shape = (batch_size, seq_len, n_kv_heads * n_rep, head_dim)
+    assert result.shape == expected_shape, f"Expected shape {expected_shape}, but got {result.shape}"
+
+    # Check if the repeated heads are correct
+    for i in range(n_kv_heads):
+        for j in range(n_rep):
+            assert torch.equal(result[:, :, i * n_rep + j, :],
+                               x[:, :, i, :]), f"Mismatch in repeated heads at index {i * n_rep + j}"
+
+    print("passed")
 
 @pytest.mark.parametrize("batch_size, seq_len, n_heads, d_head", [
     (1, 10, 4, 64),
@@ -182,11 +192,14 @@ def test_apply_rotary_emb_numerical():
     expected_xk = torch.tensor([[[[-1.0, 11.0, -1.0, 15.0]]]])
     assert torch.allclose(xq_out, expected_xq, atol=1e-6)
     assert torch.allclose(xk_out, expected_xk, atol=1e-6)
+
 # Run the test function
-# if __name__ == "__main__":
+if __name__ == "__main__":
     # test_rmsnorm()
     # test_inheritance()
     # test_precompute_freqs_cis()
     # test_reshape_for_broadcast()
     # test_apply_rotary_emb()
+    test_repeat_kv_no_repetition()
+    test_repeat_kv_with_repetition()
 

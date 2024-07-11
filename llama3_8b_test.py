@@ -85,9 +85,6 @@ encoded_input = tokenizer.encode("hello world!", add_special_tokens=False)
 decoded_output = tokenizer.decode(encoded_input)
 print(f"Encoded input: {encoded_input}")
 print(f"Decoded output: {decoded_output}")
-print(tokenizer.decode(tokenizer.encode("hello world!")))
-
-# model = torch.load("Meta-Llama-3-8B/consolidated.00.pth")
 
 state_dict = model.state_dict()
 

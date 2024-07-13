@@ -3,6 +3,8 @@
 # # import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
+from main import RMSNorm
+
 # import torch
 #
 # os.environ['HUGGINGFACE_HUB_TOKEN'] = "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"
@@ -119,3 +121,5 @@ embedding_layer = torch.nn.Embedding(128256, 4096)
 embedding_layer.weight.data.copy_(model.state_dict()["model.embed_tokens.weight"])
 token_embedding_unnormalized = embedding_layer(tokens).to(torch.bfloat16)
 print(token_embedding_unnormalized.shape)
+
+rms = RMSNorm()

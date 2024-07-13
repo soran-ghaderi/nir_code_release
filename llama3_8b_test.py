@@ -1,7 +1,7 @@
 # import os
 #
 # # import transformers
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
 # import torch
 #
@@ -19,6 +19,7 @@ token_s = "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"
 # # model_name = "meta-llama/Meta-Llama-2-7B"
 model = AutoModelForCausalLM.from_pretrained(model_name, use_auth_token=token_s)
 tokenizer = AutoTokenizer.from_pretrained(model_name, use_auth_token=token_s)
+config = AutoConfig.from_pretrained(model_name, use_auth_token=token_s)
 
 import transformers
 import torch
@@ -91,3 +92,30 @@ state_dict = model.state_dict()
 # Print the first 20 layer names
 print("dict: ", json.dumps(list(state_dict.keys())[:20], indent=4))
 print(state_dict.keys())
+print("config: ", config)
+
+
+print(type(config))
+# config_dict = dict(config)
+#
+#
+# dim = config["hidden_size"]
+# n_layers = config["num_hidden_layers"]
+# n_heads = config["num_attention_heads"]
+# kv_heads = config["num_key_value_heads"]
+# vocab_size = config["vocab_size"]
+# rope_theta = torch.tensor(config["rope_theta"])
+
+
+prompt = "the answer to the ultimate question of life, the universe, and everything is "
+tokens = tokenizer.encode(prompt)
+print(tokens)
+tokens = torch.tensor(tokens)
+prompt_split_as_tokens = tokenizer.decode([token.item() for token in tokens])
+print(prompt_split_as_tokens)
+
+
+embedding_layer = torch.nn.Embedding(128256, 4096)
+embedding_layer.weight.data.copy_(model.state_dict()["model.embed_tokens.weight"])
+token_embedding_unnormalized = embedding_layer(tokens).to(torch.bfloat16)
+print(token_embedding_unnormalized.shape)

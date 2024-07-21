@@ -1869,21 +1869,21 @@ if __name__ == "__main__":
     # print("layer 1: ", model.model.layers[1])
 
     print(type(model.model.layers[0].self_attn.q_proj))
-    model.model.layers[25].self_attn = MoCSdpaAttention(config, layer_idx=25)
     # print(model.model)
     print("config.hidden_size: ", config.num_hidden_layers)
     print("num layers: ", len(model.model.layers))
-    # for i in range(config.num_hidden_layers):
-    #     model.model.layers[i].self_attn = Attention(config, layer_idx=i)
+    for i in range(config.num_hidden_layers):
+        # model.model.layers[i].self_attn = Attention(config, layer_idx=i)
+        model.model.layers[i].self_attn = MoCSdpaAttention(config, layer_idx=i)
 
     # print("layer 0: ", model.model.layers[0])
-    # print(model.model)
+    print(model.model)
     # generated_text = generate_text(model, tokenizer, prompt, max_length=50)
     # print(f"Generated text after: {generated_text}")
 
     # input_ids = tokenizer.encode(prompt, return_tensors="pt")
     input_ids = tokenizer(prompt, return_tensors="pt")
-    print("input ids: ", input_ids)
+    # print("input ids: ", input_ids)
     # outputs = model(**input_ids, output_hidden_states=True)
 
     # crvs = outputs.hidden_states

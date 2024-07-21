@@ -1,4 +1,7 @@
 import math
+import os
+
+import numpy as np
 import torch
 import torch.nn.functional as F
 from huggingface_hub.utils import logging
@@ -126,6 +129,52 @@ class LlamaRotaryEmbedding(nn.Module):
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
+class ModifiedLlamaRotaryEmbedding(nn.Module):
+    def __init__(
+        self,
+        dim,
+        max_position_embeddings=2048,
+        base=10000,
+        device=None,
+        scaling_factor=1.0,
+    ):
+        super().__init__()
+        self.scaling_factor = scaling_factor
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        inv_freq = 1.0 / (
+            self.base
+            ** (torch.arange(0, self.dim, 2, dtype=torch.float).to(device) / self.dim)
+        )
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.max_seq_len_cached = max_position_embeddings
+
+    @torch.no_grad()
+    def forward(self, x, seq_len):
+        # x: [bs, num_attention_heads, seq_len, head_size]
+        position_ids = torch.arange(seq_len, device=x.device)
+        inv_freq_expanded = self.inv_freq.unsqueeze(0)  # [1, dim/2]
+        position_ids_expanded = position_ids.unsqueeze(1).float()  # [seq_len, 1]
+
+        device_type = x.device.type
+        device_type = (
+            device_type
+            if isinstance(device_type, str) and device_type != "mps"
+            else "cpu"
+        )
+
+        with torch.autocast(device_type=device_type, enabled=False):
+            freqs = torch.matmul(
+                position_ids_expanded, inv_freq_expanded
+            )  # [seq_len, dim/2]
+            emb = torch.cat((freqs, freqs), dim=-1)  # [seq_len, dim]
+            cos = emb.cos()
+            sin = emb.sin()
+
+        return cos.unsqueeze(0).to(dtype=x.dtype), sin.unsqueeze(0).to(dtype=x.dtype)
+
+
 class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
     """LlamaRotaryEmbedding extended with linear scaling. Credits to the Reddit user /u/kaiokendev"""
 
@@ -189,8 +238,10 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
+
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
+
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
@@ -311,7 +362,12 @@ class LlamaAttention(nn.Module):
 
     def _init_rope(self):
         if self.config.rope_scaling is None:
-            self.rotary_emb = LlamaRotaryEmbedding(
+            # self.rotary_emb = LlamaRotaryEmbedding(
+            #     self.head_dim,
+            #     max_position_embeddings=self.max_position_embeddings,
+            #     base=self.rope_theta,
+            # )
+            self.rotary_emb = ModifiedLlamaRotaryEmbedding(
                 self.head_dim,
                 max_position_embeddings=self.max_position_embeddings,
                 base=self.rope_theta,
@@ -393,8 +449,12 @@ class LlamaAttention(nn.Module):
         ).transpose(1, 2)
 
         cos, sin = self.rotary_emb(value_states, position_ids)
+        # query_states, key_states = apply_rotary_pos_emb(
+        #     query_states, key_states, cos, sin
+        # )
+
         query_states, key_states = apply_rotary_pos_emb(
-            query_states, key_states, cos, sin
+            query_states, key_states, cos, sin, position_ids[:, :q_len]
         )
 
         if past_key_value is not None:
@@ -598,28 +658,58 @@ class MoCSdpaAttention(LlamaAttention):
 
         bsz, q_len, _ = hidden_states.size()
 
+        # loading crvs
+        filename = "data/crvs.pt"
+        loaded_crvs = torch.load(filename)
+        print("loaded crvs from moc layer: ", len(loaded_crvs), loaded_crvs.shape)
+        layer_crv = loaded_crvs[self.layer_idx]
+        print(
+            "layer crv from moc layer: ",
+            self.layer_idx,
+            len(layer_crv),
+            layer_crv.shape,
+        )
+        print("original hidden state", len(hidden_states), hidden_states.shape)
+        _, k_len, _ = layer_crv.size()
+
         query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
+        # key_states = self.k_proj(hidden_states)
+        key_states = self.k_proj(layer_crv)
+        # value_states = self.v_proj(hidden_states)
+        value_states = self.v_proj(layer_crv)
 
         query_states = query_states.view(
             bsz, q_len, self.num_heads, self.head_dim
         ).transpose(1, 2)
         key_states = key_states.view(
-            bsz, q_len, self.num_key_value_heads, self.head_dim
+            bsz, k_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
         value_states = value_states.view(
-            bsz, q_len, self.num_key_value_heads, self.head_dim
+            bsz, k_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
 
-        cos, sin = self.rotary_emb(value_states, position_ids)
-        query_states, key_states = apply_rotary_pos_emb(
-            query_states, key_states, cos, sin
-        )
+        # cos, sin = self.rotary_emb(value_states, position_ids) # original implementation
+
+        cos_q, sin_q = self.rotary_emb(query_states, seq_len=query_states.shape[-2])
+        cos_k, sin_k = self.rotary_emb(key_states, seq_len=key_states.shape[-2])
+
+        query_states, _ = apply_rotary_pos_emb(query_states, query_states, cos_q, sin_q)
+        _, key_states = apply_rotary_pos_emb(key_states, key_states, cos_k, sin_k)
+
+        # fixme: RuntimeError: The size of tensor a (8) must match the size of tensor b (32) at non-singleton dimension 1
+        # query_states, key_states = apply_rotary_pos_emb(
+        #     query_states, key_states, cos, sin, position_ids=position_ids
+        # ) # original implementation
 
         if past_key_value is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            cache_kwargs = {
+                "sin_q": sin_q,
+                "cos_q": cos_q,
+                "sin_k": sin_k,
+                "cos_k": cos_k,
+                "cache_position": cache_position,
+            }  # modified separated q and k
             key_states, value_states = past_key_value.update(
                 key_states, value_states, self.layer_idx, cache_kwargs
             )
@@ -1697,8 +1787,49 @@ def generate_text(
         )
 
     # Decode the generated token IDs back to text
+    print("outputs: ", outputs)
     generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
     return generated_text
+
+
+# class CRVExtractionPipeline(TokenClassificationPipeline):
+#     def __init__(self, model, *args, **kwargs):
+#         super().__init__(
+#             model=AutoModelForTokenClassification.from_pretrained(model_path),
+#             tokenizer=AutoTokenizer.from_pretrained(model),
+#             *args,
+#             **kwargs,
+#         )
+#
+#     def _forward(self, model_inputs):
+#         # Forward
+#         special_tokens_mask = model_inputs.pop("special_tokens_mask")
+#         offset_mapping = model_inputs.pop("offset_mapping", None)
+#         sentence = model_inputs.pop("sentence")
+#
+#         outputs = self.model(**model_inputs)
+#         logits = outputs[0]
+#
+#         hidden_state = outputs[1]
+#
+#         return {
+#             "logits": logits,
+#             "special_tokens_mask": special_tokens_mask,
+#             "offset_mapping": offset_mapping,
+#             "sentence": sentence,
+#             "hidden_state": hidden_state,  # Add hidden state to the returned dictionary
+#             **model_inputs,
+#         }
+#
+#     def postprocess(self, model_outputs):
+#         results = super().postprocess(
+#             model_outputs=model_outputs,
+#             aggregation_strategy=AggregationStrategy.SIMPLE,
+#         )
+#         return {
+#             "keywords": np.unique([result.get("word").strip() for result in results]),
+#             "hidden_state": model_outputs["hidden_state"],
+#         }
 
 
 if __name__ == "__main__":
@@ -1717,25 +1848,99 @@ if __name__ == "__main__":
 
     # Define the input prompt
     prompt = "introduce yourself."
+    # prompt = (
+    #     "The Apollo 11 mission was the first manned mission to land on the Moon. Launched by NASA on July 16, "
+    #     "1969, it carried astronauts Neil Armstrong, Buzz Aldrin, and Michael Collins. On July 20, 1969, Neil "
+    #     "Armstrong and Buzz Aldrin landed the lunar module Eagle on the Moon while Michael Collins remained in "
+    #     "lunar orbit in the command module Columbia. Armstrong became the first person to step onto the lunar "
+    #     "surface, followed by Aldrin. They spent about two and a quarter hours outside the spacecraft, "
+    #     "collecting samples and conducting experiments. The mission returned to Earth on July 24, 1969."
+    # )
+
+    prompt = "Who were the astronauts involved in the Apollo 11 mission and what were their roles?"
 
     # Generate text
     # generated_text = generate_text(model, tokenizer, prompt, max_length=50)
     # print(f"Generated text: {generated_text}")
     print("loaded ... ")
     state_dict = model.state_dict()
-    model.model.layers[0].self_attn = MoCSdpaAttention(config, layer_idx=0)
-    print("layer 0: ", model.model.layers[0])
-    print("layer 1: ", model.model.layers[1])
+    # model.model.layers[5].self_attn = MoCSdpaAttention(config, layer_idx=5)
+    # print("layer 0: ", model.model.layers[0])
+    # print("layer 1: ", model.model.layers[1])
 
     print(type(model.model.layers[0].self_attn.q_proj))
-    model.model.layers[30].self_attn = MoCSdpaAttention(config, layer_idx=30)
-    print(model.model)
+    model.model.layers[25].self_attn = MoCSdpaAttention(config, layer_idx=25)
+    # print(model.model)
     print("config.hidden_size: ", config.num_hidden_layers)
     print("num layers: ", len(model.model.layers))
     # for i in range(config.num_hidden_layers):
     #     model.model.layers[i].self_attn = Attention(config, layer_idx=i)
 
     # print("layer 0: ", model.model.layers[0])
-    print(model.model)
+    # print(model.model)
     # generated_text = generate_text(model, tokenizer, prompt, max_length=50)
     # print(f"Generated text after: {generated_text}")
+
+    # input_ids = tokenizer.encode(prompt, return_tensors="pt")
+    input_ids = tokenizer(prompt, return_tensors="pt")
+    print("input ids: ", input_ids)
+    # outputs = model(**input_ids, output_hidden_states=True)
+
+    # crvs = outputs.hidden_states
+    # print("outputs: ", type(crvs), len(crvs), crvs[0].shape, crvs[1].shape)
+    #
+    # crvs = [crv.detach() for crv in crvs]
+    # crvs = torch.stack(crvs)
+
+    # saving
+    # filename = "data/crvs.pt"
+    # if not os.path.exists("data/"):
+    #     os.makedirs("data/")
+
+    # torch.save(crvs, filename)
+
+    # loading
+    # loaded_crvs = torch.load(filename)
+    # print("loaded crvs: ", len(loaded_crvs), loaded_crvs.shape)
+
+    # Define hooks to capture hidden states and Q, K, V matrices
+    hidden_states = []
+    qkv_states = {"q": [], "k": [], "v": []}
+
+    def hook_hidden_states(module, input, output):
+        hidden_states.append(output)
+
+    def hook_q(module, input, output):
+        qkv_states["q"].append(output)
+
+    def hook_k(module, input, output):
+        qkv_states["k"].append(output)
+
+    def hook_v(module, input, output):
+        qkv_states["v"].append(output)
+
+    # Register hooks to the q_proj, k_proj, and v_proj layers of each decoder layer
+    for layer in model.model.layers:
+        layer.register_forward_hook(hook_hidden_states)
+        layer.self_attn.q_proj.register_forward_hook(hook_q)
+        layer.self_attn.k_proj.register_forward_hook(hook_k)
+        layer.self_attn.v_proj.register_forward_hook(hook_v)
+
+    # Run the sample input through the model again
+    outputs = model(**input_ids, output_hidden_states=True)
+
+    logits = outputs.logits
+
+    predicted_ids = torch.argmax(logits, dim=-1)
+    predicted_text = tokenizer.decode(predicted_ids[0])
+    print("Predicted text:", predicted_text)
+
+    # The qkv_states dictionary now contains the query, key, and value matrices
+    # print(
+    #     "Query states shape:", len(qkv_states["q"]), [q.shape for q in qkv_states["q"]]
+    # )
+    # print("Key states shape:", len(qkv_states["k"]), [k.shape for k in qkv_states["k"]])
+    # print(
+    #     "Value states shape:", len(qkv_states["v"]), [v.shape for v in qkv_states["v"]]
+    # )
+    # print("Shape of hidden states tensor:", crvs.shape)

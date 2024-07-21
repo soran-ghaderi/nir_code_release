@@ -163,11 +163,11 @@ cython_debug/
 /.idea/.gitignore
 /.idea/.name
 /dummy.py
-/main.py
+/old/main.py
 /.idea/misc.xml
 /.idea/moc.iml
 /.idea/modules.xml
 /.idea/inspectionProfiles/profiles_settings.xml
-/temp_cross.py
-/utils.py
+/old/temp_cross.py
+/old/utils.py
 /.idea/vcs.xml

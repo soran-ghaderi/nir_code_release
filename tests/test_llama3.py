@@ -2,7 +2,7 @@ import pytest
 import torch
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
-from main import (
+from old.main import (
     RMSNorm,
     precompute_freqs_cis,
     reshape_for_broadcast,

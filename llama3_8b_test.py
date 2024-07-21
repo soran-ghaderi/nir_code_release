@@ -674,9 +674,9 @@ class MoCSdpaAttention(LlamaAttention):
 
         query_states = self.q_proj(hidden_states)
         # key_states = self.k_proj(hidden_states)
-        key_states = self.k_proj(layer_crv)
+        key_states = self.k_proj(layer_crv)  # use crv
         # value_states = self.v_proj(hidden_states)
-        value_states = self.v_proj(layer_crv)
+        value_states = self.v_proj(layer_crv)  # use crv
 
         query_states = query_states.view(
             bsz, q_len, self.num_heads, self.head_dim

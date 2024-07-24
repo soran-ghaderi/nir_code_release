@@ -46,11 +46,12 @@ def main():
     print("model type: ", type(model))
     print("config.hidden_size: ", config.num_hidden_layers)
     print("num layers: ", len(model.model.layers))
-    for i in range(config.num_hidden_layers):
-        # model.model.layers[i].self_attn = Attention(config, layer_idx=i)
-        # model.model.layers[i].self_attn = MoCSdpaAttention(config, layer_idx=i)
-        # model.model.layers[i].self_attn = LlamaSdpaAttention(config, layer_idx=i)
-        print(f"layer {i}: {model.model.layers[i]}")
+    # for i in range(config.num_hidden_layers):
+    # model.model.layers[i].self_attn = Attention(config, layer_idx=i)
+    # model.model.layers[i].self_attn = MoCSdpaAttention(config, layer_idx=i)
+    # model.model.layers[i].self_attn = LlamaSdpaAttention(config, layer_idx=i)
+    # print(f"layer {i}: {model.model.layers[i]}")
+    # pass
     # print("layer 0: ", model.model.layers[0])
     # print(model.model)
     # input_ids = tokenizer.encode(prompt, return_tensors="pt")

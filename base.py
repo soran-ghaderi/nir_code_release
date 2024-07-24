@@ -179,6 +179,52 @@ class LlamaRotaryEmbedding(nn.Module):
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
+class ModifiedLlamaRotaryEmbedding(nn.Module):
+    def __init__(
+        self,
+        dim,
+        max_position_embeddings=2048,
+        base=10000,
+        device=None,
+        scaling_factor=1.0,
+    ):
+        super().__init__()
+        self.scaling_factor = scaling_factor
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        inv_freq = 1.0 / (
+            self.base
+            ** (torch.arange(0, self.dim, 2, dtype=torch.float).to(device) / self.dim)
+        )
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.max_seq_len_cached = max_position_embeddings
+
+    @torch.no_grad()
+    def forward(self, x, seq_len):
+        # x: [bs, num_attention_heads, seq_len, head_size]
+        position_ids = torch.arange(seq_len, device=x.device)
+        inv_freq_expanded = self.inv_freq.unsqueeze(0)  # [1, dim/2]
+        position_ids_expanded = position_ids.unsqueeze(1).float()  # [seq_len, 1]
+
+        device_type = x.device.type
+        device_type = (
+            device_type
+            if isinstance(device_type, str) and device_type != "mps"
+            else "cpu"
+        )
+
+        with torch.autocast(device_type=device_type, enabled=False):
+            freqs = torch.matmul(
+                position_ids_expanded, inv_freq_expanded
+            )  # [seq_len, dim/2]
+            emb = torch.cat((freqs, freqs), dim=-1)  # [seq_len, dim]
+            cos = emb.cos()
+            sin = emb.sin()
+
+        return cos.unsqueeze(0).to(dtype=x.dtype), sin.unsqueeze(0).to(dtype=x.dtype)
+
+
 class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
     """LlamaRotaryEmbedding extended with linear scaling. Credits to the Reddit user /u/kaiokendev"""
 
@@ -366,16 +412,16 @@ class LlamaAttention(nn.Module):
 
     def _init_rope(self):
         if self.config.rope_scaling is None:
-            self.rotary_emb = LlamaRotaryEmbedding(
-                self.head_dim,
-                max_position_embeddings=self.max_position_embeddings,
-                base=self.rope_theta,
-            )
-            # self.rotary_emb = ModifiedLlamaRotaryEmbedding(
+            # self.rotary_emb = LlamaRotaryEmbedding(
             #     self.head_dim,
             #     max_position_embeddings=self.max_position_embeddings,
             #     base=self.rope_theta,
             # )
+            self.rotary_emb = ModifiedLlamaRotaryEmbedding(
+                self.head_dim,
+                max_position_embeddings=self.max_position_embeddings,
+                base=self.rope_theta,
+            )
         else:
             scaling_type = self.config.rope_scaling["type"]
             scaling_factor = self.config.rope_scaling["factor"]
@@ -629,12 +675,12 @@ class LlamaDecoderLayer(nn.Module):
     def __init__(self, config: LlamaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        print(
-            "Llamadecoder layer: the attention class: ",
-            LLAMA_ATTENTION_CLASSES[config._attn_implementation](
-                config=config, layer_idx=layer_idx
-            ),
-        )
+        # print(
+        #     "Llamadecoder layer: the attention class: ",
+        #     LLAMA_ATTENTION_CLASSES[config._attn_implementation](
+        #         config=config, layer_idx=layer_idx
+        #     ),
+        # )
         self.self_attn = LLAMA_ATTENTION_CLASSES[config._attn_implementation](
             config=config, layer_idx=layer_idx
         )

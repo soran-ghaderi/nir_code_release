@@ -1,7 +1,12 @@
 import torch
 from transformers import AutoConfig
 
-from llama3_8b_test import load_custom_transformer, MoCSdpaAttention, LlamaSdpaAttention
+from llama3_8b_test import (
+    load_custom_transformer,
+    MoCSdpaAttention,
+    generate_text,
+)
+from base import LlamaSdpaAttention
 
 
 def main():
@@ -13,6 +18,9 @@ def main():
     config = AutoConfig.from_pretrained(hf_model_path, use_auth_token=hf_token)
     print(config)
     # Load the custom transformer model and tokenizer
+
+    # todo: the MoC attention layers should be replaced before the loading of the weights -> solves the problem!!!
+
     model, tokenizer = load_custom_transformer(
         hf_model_path, hf_tokenizer_path, hf_token=hf_token
     )
@@ -35,25 +43,26 @@ def main():
     # model.model.layers[5].self_attn = MoCSdpaAttention(config, layer_idx=5)
     # print("layer 0: ", model.model.layers[0])
     # print("layer 1: ", model.model.layers[1])
-    print(type(model.model.layers[0].self_attn.q_proj))
-    # print(model.model)
+    print("model type: ", type(model))
     print("config.hidden_size: ", config.num_hidden_layers)
     print("num layers: ", len(model.model.layers))
     for i in range(config.num_hidden_layers):
         # model.model.layers[i].self_attn = Attention(config, layer_idx=i)
         # model.model.layers[i].self_attn = MoCSdpaAttention(config, layer_idx=i)
-        model.model.layers[i].self_attn = LlamaSdpaAttention(config, layer_idx=i)
+        # model.model.layers[i].self_attn = LlamaSdpaAttention(config, layer_idx=i)
+        print(f"layer {i}: {model.model.layers[i]}")
     # print("layer 0: ", model.model.layers[0])
-    print(model.model)
-    # generated_text = generate_text(model, tokenizer, prompt, max_length=50)
-    # print(f"Generated text after: {generated_text}")
+    # print(model.model)
     # input_ids = tokenizer.encode(prompt, return_tensors="pt")
     input_ids = tokenizer(prompt, return_tensors="pt")
-    print(model.generate)
     # print("input ids: ", input_ids)
     # outputs = model(**input_ids, output_hidden_states=True)
     # crvs = outputs.hidden_states
     # print("outputs: ", type(crvs), len(crvs), crvs[0].shape, crvs[1].shape)
+
+    generated_text = generate_text(model, tokenizer, prompt, max_length=50)
+    print(f"Generated text after: {generated_text}")
+
     #
     # crvs = [crv.detach() for crv in crvs]
     # crvs = torch.stack(crvs)

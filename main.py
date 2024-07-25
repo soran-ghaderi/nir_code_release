@@ -10,6 +10,12 @@ from base import LlamaSdpaAttention
 
 
 def main():
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print("Using GPU:", torch.cuda.get_device_name(0))
+    else:
+        device = torch.device("cpu")
+        print("Using CPU")
 
     # Path to the pretrained model and tokenizer
     hf_model_path = "meta-llama/Meta-Llama-3-8B"
@@ -20,10 +26,12 @@ def main():
     # Load the custom transformer model and tokenizer
 
     # todo: the MoC attention layers should be replaced before the loading of the weights -> solves the problem!!!
-
+    # todo: try to add crvs to the k and v instead of cross attention
+    # todo: try to concat them instead of cross attention if it didn't work
     model, tokenizer = load_custom_transformer(
-        hf_model_path, hf_tokenizer_path, hf_token=hf_token
+        hf_model_path, hf_tokenizer_path, config=config, hf_token=hf_token
     )
+
     # Define the input prompt
     prompt = "introduce yourself."
     # prompt = (
@@ -46,35 +54,12 @@ def main():
     print("model type: ", type(model))
     print("config.hidden_size: ", config.num_hidden_layers)
     print("num layers: ", len(model.model.layers))
-    # for i in range(config.num_hidden_layers):
-    # model.model.layers[i].self_attn = Attention(config, layer_idx=i)
-    # model.model.layers[i].self_attn = MoCSdpaAttention(config, layer_idx=i)
-    # model.model.layers[i].self_attn = LlamaSdpaAttention(config, layer_idx=i)
-    # print(f"layer {i}: {model.model.layers[i]}")
-    # pass
-    # print("layer 0: ", model.model.layers[0])
     # print(model.model)
-    # input_ids = tokenizer.encode(prompt, return_tensors="pt")
-    input_ids = tokenizer(prompt, return_tensors="pt")
-    # print("input ids: ", input_ids)
-    # outputs = model(**input_ids, output_hidden_states=True)
-    # crvs = outputs.hidden_states
-    # print("outputs: ", type(crvs), len(crvs), crvs[0].shape, crvs[1].shape)
 
+    input_ids = tokenizer(prompt, return_tensors="pt")
     generated_text = generate_text(model, tokenizer, prompt, max_length=50)
     print(f"Generated text after: {generated_text}")
 
-    #
-    # crvs = [crv.detach() for crv in crvs]
-    # crvs = torch.stack(crvs)
-    # saving
-    # filename = "data/crvs.pt"
-    # if not os.path.exists("data/"):
-    #     os.makedirs("data/")
-    # torch.save(crvs, filename)
-    # loading
-    # loaded_crvs = torch.load(filename)
-    # print("loaded crvs: ", len(loaded_crvs), loaded_crvs.shape)
     # Define hooks to capture hidden states and Q, K, V matrices
     hidden_states = []
     qkv_states = {"q": [], "k": [], "v": []}

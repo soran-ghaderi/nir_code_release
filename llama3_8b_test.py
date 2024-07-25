@@ -1,4 +1,6 @@
 from audioop import cross
+from accelerate import Accelerator, accelerator
+from accelerate import init_empty_weights, load_checkpoint_and_dispatch
 
 from sympy.categories import Object
 from torch.nn import functional as F, CrossEntropyLoss
@@ -57,8 +59,10 @@ class MoCSdpaAttention(LlamaAttention):
         config: LlamaConfig,
         layer_idx: Optional[int] = None,
         cross_attend: Optional[bool] = False,
+        attention_option: str = "default",
     ):
         super().__init__(config, layer_idx)
+        self.attention_option = attention_option
         self.cross_attend = cross_attend
         if cross_attend:
             filename = "data/crvs.pt"
@@ -106,6 +110,7 @@ class MoCSdpaAttention(LlamaAttention):
 
         # get qlen and klen and handling self- or cross-attend
         bsz, q_len, _ = hidden_states.size()
+        v_len = q_len
         query_states = self.q_proj(hidden_states)
 
         if not self.cross_attend:
@@ -113,14 +118,21 @@ class MoCSdpaAttention(LlamaAttention):
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
         else:
-            filename = "data/crvs.pt"
-            loaded_crvs = torch.load(filename)
+            # filename = "data/crvs.pt"
+            # loaded_crvs = torch.load(filename)
             # print("loaded crvs from moc layer: ", len(loaded_crvs), loaded_crvs.shape)
-            self.layer_crv = loaded_crvs[self.layer_idx]
+            # self.layer_crv = loaded_crvs[self.layer_idx]
+            # self.layer_crv = hidden_states  # todo: remove this, just for testing to see if the self-attention works
+            # with the modified rotary emb
 
             _, k_len, _ = self.layer_crv.size()
             key_states = self.k_proj(self.layer_crv)  # use crv
             value_states = self.v_proj(self.layer_crv)  # use crv
+            # value_states = self.v_proj(
+            #     hidden_states
+            # )  # use hidden state # todo: remove this as well
+
+            _, v_len, _ = self.layer_crv.size()
 
         query_states = query_states.view(
             bsz, q_len, self.num_heads, self.head_dim
@@ -129,7 +141,7 @@ class MoCSdpaAttention(LlamaAttention):
             bsz, k_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
         value_states = value_states.view(
-            bsz, k_len, self.num_key_value_heads, self.head_dim
+            bsz, v_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
 
         if not self.cross_attend:
@@ -152,7 +164,6 @@ class MoCSdpaAttention(LlamaAttention):
             )
             _, key_states = apply_rotary_pos_emb(key_states, key_states, cos_k, sin_k)
 
-        # fixme: RuntimeError: The size of tensor a (8) must match the size of tensor b (32) at non-singleton dimension 1
         # query_states, key_states = apply_rotary_pos_emb(
         #     query_states, key_states, cos, sin, position_ids=position_ids
         # ) # original implementation
@@ -184,6 +195,22 @@ class MoCSdpaAttention(LlamaAttention):
         if attention_mask is not None:
             causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]
 
+        # following options are exclusively for tesing the implementation if it works or not
+        if self.attention_option == "self_appended":
+            # print("using self_append option")
+            # Append self-attention vectors to themselves
+            key_states = torch.cat([key_states, key_states], dim=2)
+            value_states = torch.cat([value_states, value_states], dim=2)
+        elif self.attention_option == "self_with_average":
+            # print("using self_with_average option")
+            # Append average of consecutive self-attention vectors
+            avg_key = (key_states[:, :, :-1] + key_states[:, :, 1:]) / 2
+            avg_value = (value_states[:, :, :-1] + value_states[:, :, 1:]) / 2
+            key_states = torch.cat([key_states, avg_key, key_states[:, :, -1:]], dim=2)
+            value_states = torch.cat(
+                [value_states, avg_value, value_states[:, :, -1:]], dim=2
+            )
+
         # SDPA with memory-efficient backend is currently (torch==2.1.2) bugged with non-contiguous inputs with custom attn_mask,
         # Reference: https://github.com/pytorch/pytorch/issues/112577.
         if query_states.device.type == "cuda" and causal_mask is not None:
@@ -194,7 +221,6 @@ class MoCSdpaAttention(LlamaAttention):
         # We dispatch to SDPA's Flash Attention or Efficient kernels via this `is_causal` if statement instead of an inline conditional assignment
         # in SDPA to support both torch.compile's dynamic shapes and full graph options. An inline conditional prevents dynamic shapes from compiling.
         is_causal = True if causal_mask is None and q_len > 1 else False
-
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states,
             key_states,
@@ -225,7 +251,7 @@ class MoCLlamaForCausalLM(LlamaPreTrainedModel):
         self.post_init()
         self.config = config
         self.cross_attend = cross_attend
-        self.replace_layers()
+        self.replace_layers(attention_option="self_with_average")
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
@@ -404,34 +430,59 @@ class MoCLlamaForCausalLM(LlamaPreTrainedModel):
         return model_inputs
 
     def replace_layers(
-        self, layer_object: Object = None, layer_idx: Union[int, list] = None
+        self,
+        attention_option: str = "default",
+        layer_object: Object = None,
+        layer_idx: Union[int, list] = None,
     ):
 
         for i in range(self.config.num_hidden_layers):
             self.model.layers[i].self_attn = MoCSdpaAttention(
-                self.config, layer_idx=i, cross_attend=False
+                self.config,
+                layer_idx=i,
+                cross_attend=False,
+                attention_option=attention_option,
             )
 
         idx = 10
         self.model.layers[idx].self_attn = MoCSdpaAttention(
-            self.config, layer_idx=idx, cross_attend=True
+            self.config,
+            layer_idx=idx,
+            cross_attend=False,
+            attention_option=attention_option,
         )
         return
 
 
 def load_custom_transformer(
-    pretrained_model_path, tokenizer_path, hf_token=None, cross_attend=False
+    pretrained_model_path, tokenizer_path, config, hf_token=None, cross_attend=False
 ):
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print("Using GPU:", torch.cuda.get_device_name(0))
+    else:
+        device = torch.device("cpu")
+        print("Using CPU")
     # Load the configuration
     # config = LlamaConfig.from_pretrained(pretrained_model_path)
 
     # Load the tokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_auth_token=hf_token)
     model = MoCLlamaForCausalLM.from_pretrained(
-        pretrained_model_path, use_auth_token=hf_token
+        pretrained_model_path,
+        use_auth_token=hf_token,
+        device_map="auto",
+        # load_in_8bit=True,
     )
-    # model = AutoModelForCausalLM.from_pretrained(
-    #     pretrained_model_path, use_auth_token=hf_token
+
+    # with init_empty_weights():
+    #     model = MoCLlamaForCausalLM.from_config(config)
+    #
+    # model = load_checkpoint_and_dispatch(
+    #     model,
+    #     pretrained_model_path,
+    #     device_map="auto",
+    #     no_split_module_classes=["LlamaDecoderLayer"]
     # )
 
     model.eval()  # Set the model to evaluation mode
@@ -449,8 +500,15 @@ def generate_text(
     top_p=0.95,
     cross_attend=False,
 ):
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print("Using GPU:", torch.cuda.get_device_name(0))
+    else:
+        device = torch.device("cpu")
+        print("Using CPU")
+
     # Encode the input prompt
-    input_ids = tokenizer.encode(prompt, return_tensors="pt")
+    input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
 
     # Generate text using the model
     with torch.no_grad():

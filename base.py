@@ -289,8 +289,10 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
 
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
+    # sending all tensors to the same device
+    cos = cos.unsqueeze(unsqueeze_dim).to(q.device)
+    sin = sin.unsqueeze(unsqueeze_dim).to(q.device)
+    k = k.to(q.device)
 
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
@@ -346,6 +348,61 @@ class LlamaMLP(nn.Module):
             down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
 
         return down_proj
+
+
+class MoCLlamaMLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size
+        self.gate_proj = nn.Linear(
+            self.hidden_size, self.intermediate_size, bias=config.mlp_bias
+        )
+        self.up_proj = nn.Linear(
+            self.hidden_size, self.intermediate_size, bias=config.mlp_bias
+        )
+        self.down_proj = nn.Linear(
+            self.intermediate_size, self.hidden_size, bias=config.mlp_bias
+        )
+        self.act_fn = ACT2FN[config.hidden_act]
+
+    def forward(self, x):
+        device = x.device
+        if self.config.pretraining_tp > 1:
+            slice = self.intermediate_size // self.config.pretraining_tp
+            gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)
+            up_proj_slices = self.up_proj.weight.split(slice, dim=0)
+            down_proj_slices = self.down_proj.weight.split(slice, dim=1)
+            gate_proj = torch.cat(
+                [
+                    F.linear(x, gate_proj_slices[i].to(device))
+                    for i in range(self.config.pretraining_tp)
+                ],
+                dim=-1,
+            )
+            up_proj = torch.cat(
+                [
+                    F.linear(x, up_proj_slices[i].to(device))
+                    for i in range(self.config.pretraining_tp)
+                ],
+                dim=-1,
+            )
+            intermediate_states = (self.act_fn(gate_proj) * up_proj).split(slice, dim=2)
+            down_proj = [
+                F.linear(intermediate_states[i], down_proj_slices[i].to(device))
+                for i in range(self.config.pretraining_tp)
+            ]
+            down_proj = sum(down_proj)
+        else:
+            gate_proj_output = self.gate_proj(x.to(device))
+            up_proj_output = self.up_proj(x.to(device))
+            tem = self.act_fn(gate_proj_output)
+            tem = tem.to(device)
+            up_proj_output = up_proj_output.to(tem.device)
+            temp = tem * up_proj_output
+            down_proj = self.down_proj(temp)
+        return down_proj.to(device)
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -685,7 +742,7 @@ class LlamaDecoderLayer(nn.Module):
             config=config, layer_idx=layer_idx
         )
 
-        self.mlp = LlamaMLP(config)
+        self.mlp = MoCLlamaMLP(config)
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = LlamaRMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
@@ -723,6 +780,7 @@ class LlamaDecoderLayer(nn.Module):
                 Arbitrary kwargs to be ignored, used for FSDP and other methods that injects code
                 into the model
         """
+
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
@@ -744,6 +802,115 @@ class LlamaDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+
+        outputs = (hidden_states,)
+
+        if output_attentions:
+            outputs += (self_attn_weights,)
+
+        if use_cache:
+            outputs += (present_key_value,)
+
+        return outputs
+
+
+class MoCLlamaDecoderLayer(nn.Module):
+    def __init__(self, config: LlamaConfig, layer_idx: int):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        # print(
+        #     "Llamadecoder layer: the attention class: ",
+        #     LLAMA_ATTENTION_CLASSES[config._attn_implementation](
+        #         config=config, layer_idx=layer_idx
+        #     ),
+        # )
+        self.self_attn = LLAMA_ATTENTION_CLASSES[config._attn_implementation](
+            config=config, layer_idx=layer_idx
+        )
+
+        self.mlp = MoCLlamaMLP(config)
+        self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = LlamaRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
+        self.layer_idx = layer_idx
+        self.test_use_cat = False
+        if self.test_use_cat:
+            filename = "data/crvs.pt"
+            loaded_crvs = torch.load(filename)
+            # print("loaded crvs from moc layer: ", len(loaded_crvs), loaded_crvs.shape)
+            self.layer_crv = loaded_crvs[self.layer_idx]
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Cache] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ) -> Tuple[
+        torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
+    ]:
+        """
+        Args:
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`, *optional*):
+                attention mask of size `(batch_size, sequence_length)` if flash attention is used or `(batch_size, 1,
+                query_sequence_length, key_sequence_length)` if default attention is used.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+            use_cache (`bool`, *optional*):
+                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
+                (see `past_key_values`).
+            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
+            cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+                Indices depicting the position of the input sequence tokens in the sequence
+            kwargs (`dict`, *optional*):
+                Arbitrary kwargs to be ignored, used for FSDP and other methods that injects code
+                into the model
+        """
+
+        if self.test_use_cat:
+            # print("concating ... ")
+            # print("hidden_states.device: ", hidden_states.device, hidden_states.shape)
+            self.layer_crv = self.layer_crv.to(hidden_states.device)
+            # print(
+            #     "self.layer_crv.device: ", self.layer_crv.device, self.layer_crv.shape
+            # )
+            hidden_states = torch.cat([hidden_states, self.layer_crv], dim=1)
+        residual = hidden_states
+
+        hidden_states = self.input_layernorm(hidden_states)
+
+        # Self Attention
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            **kwargs,
+        )
+
+        residual = residual.to(hidden_states.device)
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        # residual = residual.to(hidden_states.device)
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+
+        if not residual.device == hidden_states.device:
+            residual = residual.to(hidden_states.device)
+
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -822,9 +989,15 @@ class LlamaModel(LlamaPreTrainedModel):
         self.embed_tokens = nn.Embedding(
             config.vocab_size, config.hidden_size, self.padding_idx
         )
+        # self.layers = nn.ModuleList(
+        #     [
+        #         LlamaDecoderLayer(config, layer_idx)
+        #         for layer_idx in range(config.num_hidden_layers)
+        #     ]
+        # )
         self.layers = nn.ModuleList(
             [
-                LlamaDecoderLayer(config, layer_idx)
+                MoCLlamaDecoderLayer(config, layer_idx)
                 for layer_idx in range(config.num_hidden_layers)
             ]
         )

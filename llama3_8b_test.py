@@ -64,7 +64,7 @@ class MoCSdpaAttention(LlamaAttention):
         super().__init__(config, layer_idx)
         self.attention_option = attention_option
         self.cross_attend = cross_attend
-        if cross_attend:
+        if self.cross_attend:
             filename = "data/crvs.pt"
             loaded_crvs = torch.load(filename)
             # print("loaded crvs from moc layer: ", len(loaded_crvs), loaded_crvs.shape)
@@ -100,12 +100,14 @@ class MoCSdpaAttention(LlamaAttention):
 
         # loading crvs
 
-        # print(
-        #     "layer crv from moc layer: ",
-        #     self.layer_idx,
-        #     len(layer_crv),
-        #     layer_crv.shape,
-        # )
+        if self.cross_attend:
+            print("concating ... ")
+            # print("hidden_states.device: ", hidden_states.device, hidden_states.shape)
+            self.layer_crv = self.layer_crv.to(hidden_states.device)
+            # print(
+            #     "self.layer_crv.device: ", self.layer_crv.device, self.layer_crv.shape
+            # )
+            hidden_states = torch.cat([hidden_states, self.layer_crv], dim=1)
         # print("original hidden state", len(hidden_states), hidden_states.shape)
 
         # get qlen and klen and handling self- or cross-attend
@@ -241,7 +243,7 @@ class MoCSdpaAttention(LlamaAttention):
 class MoCLlamaForCausalLM(LlamaPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, config, cross_attend=True):
+    def __init__(self, config, cross_attend=False):
         super().__init__(config)
         self.model = LlamaModel(config)
         self.vocab_size = config.vocab_size
@@ -251,7 +253,7 @@ class MoCLlamaForCausalLM(LlamaPreTrainedModel):
         self.post_init()
         self.config = config
         self.cross_attend = cross_attend
-        self.replace_layers(attention_option="self_with_average")
+        self.replace_layers(attention_option="default")
 
     def get_input_embeddings(self):
         return self.model.embed_tokens

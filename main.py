@@ -18,8 +18,10 @@ def main():
         print("Using CPU")
 
     # Path to the pretrained model and tokenizer
-    hf_model_path = "meta-llama/Meta-Llama-3-8B"
-    hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B"
+    # hf_model_path = "meta-llama/Meta-Llama-3-8B"
+    hf_model_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    # hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B"
+    hf_tokenizer_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
     hf_token = "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"
     config = AutoConfig.from_pretrained(hf_model_path, use_auth_token=hf_token)
     print(config)
@@ -57,7 +59,7 @@ def main():
     # print(model.model)
 
     input_ids = tokenizer(prompt, return_tensors="pt")
-    generated_text = generate_text(model, tokenizer, prompt, max_length=50)
+    generated_text = generate_text(model, tokenizer, prompt, max_length=100)
     print(f"Generated text after: {generated_text}")
 
     # Define hooks to capture hidden states and Q, K, V matrices

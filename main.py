@@ -1,5 +1,6 @@
 import torch
 from transformers import AutoConfig
+from transformers.models.paligemma.convert_paligemma_weights_to_hf import device
 
 from llama3_8b_test import (
     load_custom_transformer,
@@ -18,12 +19,14 @@ def main():
         print("Using CPU")
 
     # Path to the pretrained model and tokenizer
-    hf_model_path = "meta-llama/Meta-Llama-3-8B"
-    # hf_model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
+    # hf_model_path = "meta-llama/Meta-Llama-3-8B"
+    hf_model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
     # hf_model_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-    hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B"
-    # hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B-Instruct"
+
+    # hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B"
+    hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B-Instruct"
     # hf_tokenizer_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+
     hf_token = "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"
     config = AutoConfig.from_pretrained(hf_model_path, use_auth_token=hf_token)
     print(config)
@@ -52,7 +55,7 @@ def main():
     print("loaded ... ")
     print("model type: ", type(model))
     print("config.hidden_size: ", config.num_hidden_layers)
-    print("num layers: ", len(model.model.layers))
+    # print("num layers: ", len(model.model.layers))
 
     print("config._attn_implementation: ", config._attn_implementation)
     # print(model.model)
@@ -78,11 +81,11 @@ def main():
         qkv_states["v"].append(output)
 
     # Register hooks to the q_proj, k_proj, and v_proj layers of each decoder layer
-    for layer in model.model.layers:
-        layer.register_forward_hook(hook_hidden_states)
-        layer.self_attn.q_proj.register_forward_hook(hook_q)
-        layer.self_attn.k_proj.register_forward_hook(hook_k)
-        layer.self_attn.v_proj.register_forward_hook(hook_v)
+    # for layer in model.model.layers:
+    #     layer.register_forward_hook(hook_hidden_states)
+    #     layer.self_attn.q_proj.register_forward_hook(hook_q)
+    #     layer.self_attn.k_proj.register_forward_hook(hook_k)
+    #     layer.self_attn.v_proj.register_forward_hook(hook_v)
 
     # Run the sample input through the model again
     # outputs = model(**input_ids, output_hidden_states=True)
@@ -106,3 +109,21 @@ def main():
 if __name__ == "__main__":
 
     main()
+    # from transformers import pipeline
+    #
+    # hf_token = "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"
+    # model_id = "meta-llama/Meta-Llama-3-8B"
+    #
+    # pipe = pipeline(
+    #     "text-generation",
+    #     model=model_id,
+    #     model_kwargs={"torch_dtype": torch.bfloat16},
+    #     device_map="auto",
+    #     token=hf_token,
+    #     device=0,
+    # )
+    # output = pipeline(
+    #     "Who were the astronauts involved in the Apollo 11 mission and what were their roles?"
+    # )
+    #
+    # print(output)

@@ -65,20 +65,20 @@ def main():
     print(f"Generated text after: {generated_text}")
 
     # Define hooks to capture hidden states and Q, K, V matrices
-    hidden_states = []
-    qkv_states = {"q": [], "k": [], "v": []}
-
-    def hook_hidden_states(module, input, output):
-        hidden_states.append(output)
-
-    def hook_q(module, input, output):
-        qkv_states["q"].append(output)
-
-    def hook_k(module, input, output):
-        qkv_states["k"].append(output)
-
-    def hook_v(module, input, output):
-        qkv_states["v"].append(output)
+    # hidden_states = []
+    # qkv_states = {"q": [], "k": [], "v": []}
+    #
+    # def hook_hidden_states(module, input, output):
+    #     hidden_states.append(output)
+    #
+    # def hook_q(module, input, output):
+    #     qkv_states["q"].append(output)
+    #
+    # def hook_k(module, input, output):
+    #     qkv_states["k"].append(output)
+    #
+    # def hook_v(module, input, output):
+    #     qkv_states["v"].append(output)
 
     # Register hooks to the q_proj, k_proj, and v_proj layers of each decoder layer
     # for layer in model.model.layers:
@@ -109,21 +109,3 @@ def main():
 if __name__ == "__main__":
 
     main()
-    # from transformers import pipeline
-    #
-    # hf_token = "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"
-    # model_id = "meta-llama/Meta-Llama-3-8B"
-    #
-    # pipe = pipeline(
-    #     "text-generation",
-    #     model=model_id,
-    #     model_kwargs={"torch_dtype": torch.bfloat16},
-    #     device_map="auto",
-    #     token=hf_token,
-    #     device=0,
-    # )
-    # output = pipeline(
-    #     "Who were the astronauts involved in the Apollo 11 mission and what were their roles?"
-    # )
-    #
-    # print(output)

@@ -30,7 +30,7 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 
-from base import (
+from moc_layers import (
     logger,
     LlamaRMSNorm,
     apply_rotary_pos_emb,

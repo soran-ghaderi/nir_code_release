@@ -7,7 +7,7 @@ from llama3_8b_test import (
     MoCSdpaAttention,
     generate_text,
 )
-from base import LlamaSdpaAttention
+from moc_layers import LlamaSdpaAttention
 
 
 def main():
@@ -61,7 +61,19 @@ def main():
     # print(model.model)
 
     input_ids = tokenizer(prompt, return_tensors="pt")
-    generated_text = generate_text(model, tokenizer, prompt, max_length=100)
+    generated_text = generate_text(
+        model,
+        tokenizer,
+        prompt,
+        max_length=100,
+        num_return_sequences=1,
+        temperature=0.8,
+        top_k=1,
+        top_p=0.95,
+        repetition_penalty=1.2,
+        no_repeat_ngram_size=3,
+        cross_attend=False,
+    )
     print(f"Generated text after: {generated_text}")
 
     # Define hooks to capture hidden states and Q, K, V matrices

@@ -1,4 +1,6 @@
 from audioop import cross
+from http.client import responses
+
 from accelerate import Accelerator, accelerator
 from accelerate import init_empty_weights, load_checkpoint_and_dispatch
 
@@ -11,6 +13,7 @@ from transformers import (
     LlamaConfig,
 )
 from transformers.cache_utils import Cache
+from transformers import TextStreamer
 
 from typing import Optional, Tuple, Union, List
 
@@ -140,10 +143,10 @@ class MoCSdpaAttention(LlamaAttention):
             bsz, q_len, self.num_heads, self.head_dim
         ).transpose(1, 2)
         key_states = key_states.view(
-            bsz, k_len, self.num_key_value_heads, self.head_dim
+            bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
         value_states = value_states.view(
-            bsz, v_len, self.num_key_value_heads, self.head_dim
+            bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
 
         if not self.cross_attend:
@@ -512,6 +515,27 @@ def generate_text(
     # Encode the input prompt
     input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
 
+    # Create a TextStreamer object
+    streamer = TextStreamer(tokenizer, skip_special_tokens=True, skip_prompt=True)
+
+    # test:
+    #
+    # messages = [
+    #     {
+    #         "role": "system",
+    #         "content": "You are a pirate chatbot who always responds in pirate speak!",
+    #     },
+    #     {"role": "user", "content": "Who are you?"},
+    # ]
+    #
+    # input_ids = tokenizer.apply_chat_template(
+    #     messages, add_generation_prompt=True, return_tensors="pt"
+    # ).to(model.device)
+    #
+    terminators = [
+        tokenizer.eos_token_id,
+        tokenizer.convert_tokens_to_ids("<|eot_id|>"),
+    ]
     # Generate text using the model
     with torch.no_grad():
         outputs = model.generate(
@@ -522,12 +546,53 @@ def generate_text(
             top_p=top_p,
             do_sample=True,
             num_return_sequences=1,
+            streamer=streamer,
         )
 
+    # outputs = model.generate(
+    #     input_ids,
+    #     max_new_tokens=256,
+    #     eos_token_id=terminators,
+    #     do_sample=True,
+    #     temperature=0.6,
+    #     top_p=0.9,
+    # )
+    response = outputs[0][input_ids.shape[-1] :]
+    print(tokenizer.decode(response, skip_special_tokens=True))
+    generated_text = responses
     # Decode the generated token IDs back to text
     # print("outputs: ", outputs)
-    generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    # generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
     return generated_text
+
+    # try:
+    #     # Generate text using the model
+    #     with torch.no_grad():
+    #         outputs = model.generate(
+    #             input_ids,
+    #             max_new_tokens=max_length,
+    #             temperature=temperature,
+    #             top_k=top_k,
+    #             top_p=top_p,
+    #             do_sample=True,
+    #             num_return_sequences=1,
+    #             eos_token_id=terminators,
+    #         )
+    #
+    #     response = outputs[0][input_ids.shape[-1] :]
+    #     generated_text = tokenizer.decode(response, skip_special_tokens=True)
+    #     print("Generated text:", generated_text)
+    #     return generated_text
+
+    # except RuntimeError as e:
+    #     print(f"Runtime Error: {e}")
+    #     print("Model config:")
+    #     print(f"Hidden size: {model.config.hidden_size}")
+    #     print(f"Num attention heads: {model.config.num_attention_heads}")
+    #     print(
+    #         f"Head dim: {model.config.hidden_size // model.config.num_attention_heads}"
+    #     )
+    #     raise
 
 
 # class CRVExtractionPipeline(TokenClassificationPipeline):

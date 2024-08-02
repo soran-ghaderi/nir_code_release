@@ -203,7 +203,13 @@ class ModifiedLlamaRotaryEmbedding(nn.Module):
     @torch.no_grad()
     def forward(self, x, seq_len):
         # x: [bs, num_attention_heads, seq_len, head_size]
-        position_ids = torch.arange(seq_len, device=x.device)
+        # position_ids = torch.arange(seq_len, device=x.device)
+        position_ids = (
+            seq_len
+            if type(seq_len) == torch.Tensor
+            else torch.arange(seq_len, device=x.device)
+        )
+
         inv_freq_expanded = self.inv_freq.unsqueeze(0)  # [1, dim/2]
         position_ids_expanded = position_ids.unsqueeze(1).float()  # [seq_len, 1]
 
@@ -215,9 +221,14 @@ class ModifiedLlamaRotaryEmbedding(nn.Module):
         )
 
         with torch.autocast(device_type=device_type, enabled=False):
-            freqs = torch.matmul(
-                position_ids_expanded, inv_freq_expanded
-            )  # [seq_len, dim/2]
+            try:
+                freqs = torch.matmul(
+                    position_ids_expanded, inv_freq_expanded
+                )  # [seq_len, dim/2]
+            except:
+                freqs = torch.matmul(
+                    position_ids_expanded.T, inv_freq_expanded
+                )  # [seq_len, dim/2]
             emb = torch.cat((freqs, freqs), dim=-1)  # [seq_len, dim]
             cos = emb.cos()
             sin = emb.sin()
@@ -416,7 +427,17 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     hidden_states = hidden_states[:, :, None, :, :].expand(
         batch, num_key_value_heads, n_rep, slen, head_dim
     )
-    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
+    try:
+        return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+    except Exception as e:
+        print(f"error: {e}")
+        print(
+            "hidden states shape, num_key_value_heads, n_rep: ",
+            hidden_states.shape,
+            num_key_value_heads,
+            n_rep,
+        )
 
 
 class LlamaAttention(nn.Module):
@@ -674,6 +695,8 @@ class LlamaSdpaAttention(LlamaAttention):
             bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
 
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
         cos, sin = self.rotary_emb(value_states, position_ids)
         query_states, key_states = apply_rotary_pos_emb(
             query_states, key_states, cos, sin
@@ -685,9 +708,6 @@ class LlamaSdpaAttention(LlamaAttention):
             key_states, value_states = past_key_value.update(
                 key_states, value_states, self.layer_idx, cache_kwargs
             )
-
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         causal_mask = attention_mask
         if attention_mask is not None:
@@ -835,12 +855,14 @@ class MoCLlamaDecoderLayer(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
         self.layer_idx = layer_idx
-        self.test_use_cat = False
+        self.is_crv_cat = False
+        self.test_use_cat = True
         if self.test_use_cat:
             filename = "data/crvs.pt"
             loaded_crvs = torch.load(filename)
             # print("loaded crvs from moc layer: ", len(loaded_crvs), loaded_crvs.shape)
             self.layer_crv = loaded_crvs[self.layer_idx]
+            # print("self.layer_crv.shape: ", self.layer_crv.shape)
 
     def forward(
         self,
@@ -875,14 +897,19 @@ class MoCLlamaDecoderLayer(nn.Module):
                 into the model
         """
 
-        if self.test_use_cat:
+        if self.test_use_cat and not self.is_crv_cat and self.layer_idx == 30:
+
             # print("concating ... ")
             # print("hidden_states.device: ", hidden_states.device, hidden_states.shape)
             self.layer_crv = self.layer_crv.to(hidden_states.device)
             # print(
             #     "self.layer_crv.device: ", self.layer_crv.device, self.layer_crv.shape
             # )
-            hidden_states = torch.cat([hidden_states, self.layer_crv], dim=1)
+            print("hidden states before cat: ", hidden_states.shape)
+            # hidden_states = torch.cat([hidden_states, self.layer_crv[:, :50, :]], dim=1)
+            hidden_states = torch.cat(hidden_states, self.layer_crv, dim=1)
+            print("hidden states aftert cat: ", hidden_states.shape)
+            self.is_crv_cat = True
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)

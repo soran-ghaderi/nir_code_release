@@ -18,16 +18,17 @@ def main():
         print("Using CPU")
 
     # Path to the pretrained model and tokenizer
-    # hf_model_path = "meta-llama/Meta-Llama-3-8B"
-    hf_model_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-    # hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B"
-    hf_tokenizer_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    hf_model_path = "meta-llama/Meta-Llama-3-8B"
+    # hf_model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
+    # hf_model_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B"
+    # hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B-Instruct"
+    # hf_tokenizer_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
     hf_token = "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"
     config = AutoConfig.from_pretrained(hf_model_path, use_auth_token=hf_token)
     print(config)
     # Load the custom transformer model and tokenizer
 
-    # todo: the MoC attention layers should be replaced before the loading of the weights -> solves the problem!!!
     # todo: try to add crvs to the k and v instead of cross attention
     # todo: try to concat them instead of cross attention if it didn't work
     model, tokenizer = load_custom_transformer(
@@ -49,13 +50,11 @@ def main():
     # generated_text = generate_text(model, tokenizer, prompt, max_length=50)
     # print(f"Generated text: {generated_text}")
     print("loaded ... ")
-    state_dict = model.state_dict()
-    # model.model.layers[5].self_attn = MoCSdpaAttention(config, layer_idx=5)
-    # print("layer 0: ", model.model.layers[0])
-    # print("layer 1: ", model.model.layers[1])
     print("model type: ", type(model))
     print("config.hidden_size: ", config.num_hidden_layers)
     print("num layers: ", len(model.model.layers))
+
+    print("config._attn_implementation: ", config._attn_implementation)
     # print(model.model)
 
     input_ids = tokenizer(prompt, return_tensors="pt")

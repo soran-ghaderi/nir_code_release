@@ -61,7 +61,19 @@ def load_custom_transformer(
     return model, tokenizer
 
 
-def write_results_to_file(file_path, results):
+def write_results_to_file(
+    file_path,
+    results,
+    prompt,
+    max_length=50,
+    max_new_tokens=100,
+    num_return_sequences=1,
+    temperature=0.8,
+    top_k=50,
+    top_p=0.95,
+    repetition_penalty=1.2,
+    no_repeat_ngram_size=1,
+):
     """
     Writes the results to a file in an organized and tabular format.
 
@@ -69,13 +81,40 @@ def write_results_to_file(file_path, results):
         file_path (str): The path to the output file.
         results (list): A list of dictionaries containing the results.
     """
+    context = (
+        "The Apollo 11 mission was the first manned mission to land on the Moon. Launched by NASA on July 16, "
+        "1969, it carried astronauts Neil Armstrong, Buzz Aldrin, and Michael Collins. On July 20, 1969, Neil "
+        "Armstrong and Buzz Aldrin landed the lunar module Eagle on the Moon while Michael Collins remained in "
+        "lunar orbit in the command module Columbia. Armstrong became the first person to step onto the lunar "
+        "surface, followed by Aldrin. They spent about two and a quarter hours outside the spacecraft, "
+        "collecting samples and conducting experiments. The mission returned to Earth on July 24, 1969."
+    )
+
     with open(file_path, mode="w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(
-            file, fieldnames=["Prompt", "Generated Output", "Concatenated Layer Index"]
-        )
-        writer.writeheader()
+        file.write(f"Prompt: {prompt}\n")
+        file.write(f"Context: {context}\n\n")
+        file.write(f"Model Parameters\n")
+        file.write(f"Max Length: {max_length}\n")
+        file.write(f"Max New Tokens: {max_new_tokens}\n")
+        file.write(f"Num Return Sequences: {num_return_sequences}\n")
+        file.write(f"Temperature: {temperature}\n")
+        file.write(f"Top K: {top_k}\n")
+        file.write(f"Top P: {top_p}\n")
+        file.write(f"Repetition Penalty: {repetition_penalty}\n")
+        file.write(f"No Repeat N-gram Size: {no_repeat_ngram_size}\n\n\n")
+        file.write(f"Generated text by concatenated layer index\n\n")
+
+        # writer = csv.DictWriter(
+        #     file, fieldnames=["Prompt", "Generated Output", "Concatenated Layer Index"]
+        # )
+        # writer.writeheader()
         for result in results:
-            writer.writerow(result)
+            # writer.writerow(result)
+            for key, value in result.items():
+                file.write(f"{key}: {value}\n")
+
+            file.write(f"\n{'==' * 80}\n")
+
     print(f"Results written to {file_path}")
 
 
@@ -145,19 +184,30 @@ def generate_text(
                 streamer=streamer,
             )
 
-    generated_text = outputs[0][input_ids.shape[-1] :]
-    decoded_text = tokenizer.decode(generated_text, skip_special_tokens=True)
+        generated_text = outputs[0][input_ids.shape[-1] :]
+        decoded_text = tokenizer.decode(generated_text, skip_special_tokens=True)
 
-    results.append(
-        {
-            "Prompt": prompt,
-            "Generated Output": decoded_text,
-            "Concatenated Layer Index": idx,
-        }
+        results.append(
+            {
+                "Layer idx": idx,
+                "Generated output": decoded_text,
+            }
+        )
+        print(results)
+    output_file = "results/concat_different_layers.csv"
+    write_results_to_file(
+        output_file,
+        results,
+        prompt,
+        max_length=50,
+        max_new_tokens=100,
+        num_return_sequences=1,
+        temperature=0.8,
+        top_k=50,
+        top_p=0.95,
+        repetition_penalty=1.2,
+        no_repeat_ngram_size=1,
     )
-
-    output_file = ""
-    write_results_to_file(output_file, results)
 
     return generated_text
 

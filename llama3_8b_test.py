@@ -1,13 +1,7 @@
-from audioop import cross
-from accelerate import Accelerator, accelerator
-from accelerate import init_empty_weights, load_checkpoint_and_dispatch
-
 from sympy.categories import Object
 from torch.nn import functional as F, CrossEntropyLoss
 from transformers import (
     AutoTokenizer,
-    AutoModelForCausalLM,
-    AutoConfig,
     LlamaConfig,
 )
 from transformers.cache_utils import Cache
@@ -17,14 +11,17 @@ from typing import Optional, Tuple, Union, List
 import torch
 import torch.utils.checkpoint
 from torch import nn
-from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_outputs import (
+    CausalLMOutputWithPast,
+    QuestionAnsweringModelOutput,
+)
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
 from transformers.utils import (
     add_start_docstrings_to_model_forward,
     replace_return_docstrings,
 )
 
-from base import (
+from moc_layers import (
     logger,
     LlamaRMSNorm,
     apply_rotary_pos_emb,
@@ -64,7 +61,7 @@ class MoCSdpaAttention(LlamaAttention):
         super().__init__(config, layer_idx)
         self.attention_option = attention_option
         self.cross_attend = cross_attend
-        if cross_attend:
+        if self.cross_attend:
             filename = "data/crvs.pt"
             loaded_crvs = torch.load(filename)
             # print("loaded crvs from moc layer: ", len(loaded_crvs), loaded_crvs.shape)
@@ -100,12 +97,14 @@ class MoCSdpaAttention(LlamaAttention):
 
         # loading crvs
 
-        # print(
-        #     "layer crv from moc layer: ",
-        #     self.layer_idx,
-        #     len(layer_crv),
-        #     layer_crv.shape,
-        # )
+        if self.cross_attend:
+            print("concating ... ")
+            # print("hidden_states.device: ", hidden_states.device, hidden_states.shape)
+            self.layer_crv = self.layer_crv.to(hidden_states.device)
+            # print(
+            #     "self.layer_crv.device: ", self.layer_crv.device, self.layer_crv.shape
+            # )
+            hidden_states = torch.cat([hidden_states, self.layer_crv], dim=1)
         # print("original hidden state", len(hidden_states), hidden_states.shape)
 
         # get qlen and klen and handling self- or cross-attend
@@ -138,10 +137,10 @@ class MoCSdpaAttention(LlamaAttention):
             bsz, q_len, self.num_heads, self.head_dim
         ).transpose(1, 2)
         key_states = key_states.view(
-            bsz, k_len, self.num_key_value_heads, self.head_dim
+            bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
         value_states = value_states.view(
-            bsz, v_len, self.num_key_value_heads, self.head_dim
+            bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
 
         if not self.cross_attend:
@@ -241,7 +240,7 @@ class MoCSdpaAttention(LlamaAttention):
 class MoCLlamaForCausalLM(LlamaPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, config, cross_attend=True):
+    def __init__(self, config, cross_attend=False):
         super().__init__(config)
         self.model = LlamaModel(config)
         self.vocab_size = config.vocab_size
@@ -251,7 +250,7 @@ class MoCLlamaForCausalLM(LlamaPreTrainedModel):
         self.post_init()
         self.config = config
         self.cross_attend = cross_attend
-        self.replace_layers(attention_option="self_with_average")
+        self.replace_layers(attention_option="default")
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
@@ -454,78 +453,123 @@ class MoCLlamaForCausalLM(LlamaPreTrainedModel):
         return
 
 
-def load_custom_transformer(
-    pretrained_model_path, tokenizer_path, config, hf_token=None, cross_attend=False
-):
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print("Using GPU:", torch.cuda.get_device_name(0))
-    else:
-        device = torch.device("cpu")
-        print("Using CPU")
-    # Load the configuration
-    # config = LlamaConfig.from_pretrained(pretrained_model_path)
+class MoCLlamaForQuestionAnswering(LlamaPreTrainedModel):
+    base_model_prefix = "transformer"
 
-    # Load the tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_auth_token=hf_token)
-    model = MoCLlamaForCausalLM.from_pretrained(
-        pretrained_model_path,
-        use_auth_token=hf_token,
-        device_map="auto",
-        # load_in_8bit=True,
-    )
+    # Copied from transformers.models.bloom.modeling_bloom.BloomForQuestionAnswering.__init__ with Bloom->Llama
+    def __init__(self, config):
+        super().__init__(config)
+        self.transformer = LlamaModel(config)
+        self.qa_outputs = nn.Linear(config.hidden_size, 2)
+        self.replace_layers(attention_option="default")
 
-    # with init_empty_weights():
-    #     model = MoCLlamaForCausalLM.from_config(config)
-    #
-    # model = load_checkpoint_and_dispatch(
-    #     model,
-    #     pretrained_model_path,
-    #     device_map="auto",
-    #     no_split_module_classes=["LlamaDecoderLayer"]
-    # )
+        # Initialize weights and apply final processing
+        self.post_init()
 
-    model.eval()  # Set the model to evaluation mode
+    def get_input_embeddings(self):
+        return self.transformer.embed_tokens
 
-    return model, tokenizer
+    def set_input_embeddings(self, value):
+        self.transformer.embed_tokens = value
 
-
-def generate_text(
-    model,
-    tokenizer,
-    prompt,
-    max_length=50,
-    temperature=1.0,
-    top_k=50,
-    top_p=0.95,
-    cross_attend=False,
-):
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print("Using GPU:", torch.cuda.get_device_name(0))
-    else:
-        device = torch.device("cpu")
-        print("Using CPU")
-
-    # Encode the input prompt
-    input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
-
-    # Generate text using the model
-    with torch.no_grad():
-        outputs = model.generate(
-            input_ids,
-            max_length=max_length,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            do_sample=True,
-            num_return_sequences=1,
+    @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        start_positions: Optional[torch.LongTensor] = None,
+        end_positions: Optional[torch.LongTensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, QuestionAnsweringModelOutput]:
+        r"""
+        start_positions (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
+            Labels for position (index) of the start of the labelled span for computing the token classification loss.
+            Positions are clamped to the length of the sequence (`sequence_length`). Position outside of the sequence
+            are not taken into account for computing the loss.
+        end_positions (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
+            Labels for position (index) of the end of the labelled span for computing the token classification loss.
+            Positions are clamped to the length of the sequence (`sequence_length`). Position outside of the sequence
+            are not taken into account for computing the loss.
+        """
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
         )
 
-    # Decode the generated token IDs back to text
-    # print("outputs: ", outputs)
-    generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return generated_text
+        outputs = self.transformer(
+            input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        sequence_output = outputs[0]
+
+        logits = self.qa_outputs(sequence_output)
+        start_logits, end_logits = logits.split(1, dim=-1)
+        start_logits = start_logits.squeeze(-1).contiguous()
+        end_logits = end_logits.squeeze(-1).contiguous()
+
+        total_loss = None
+        if start_positions is not None and end_positions is not None:
+            # If we are on multi-GPU, split add a dimension
+            if len(start_positions.size()) > 1:
+                start_positions = start_positions.squeeze(-1).to(start_logits.device)
+            if len(end_positions.size()) > 1:
+                end_positions = end_positions.squeeze(-1).to(end_logits.device)
+            # sometimes the start/end positions are outside our model inputs, we ignore these terms
+            ignored_index = start_logits.size(1)
+            start_positions = start_positions.clamp(0, ignored_index)
+            end_positions = end_positions.clamp(0, ignored_index)
+
+            loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
+            start_loss = loss_fct(start_logits, start_positions)
+            end_loss = loss_fct(end_logits, end_positions)
+            total_loss = (start_loss + end_loss) / 2
+
+        if not return_dict:
+            output = (start_logits, end_logits) + outputs[2:]
+            return ((total_loss,) + output) if total_loss is not None else output
+
+        return QuestionAnsweringModelOutput(
+            loss=total_loss,
+            start_logits=start_logits,
+            end_logits=end_logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+    def replace_layers(
+        self,
+        attention_option: str = "default",
+        layer_object: Object = None,
+        layer_idx: Union[int, list] = None,
+    ):
+
+        for i in range(self.config.num_hidden_layers):
+            self.transformer.layers[i].self_attn = MoCSdpaAttention(
+                self.config,
+                layer_idx=i,
+                cross_attend=False,
+                attention_option=attention_option,
+            )
+
+        idx = 10
+        self.transformer.layers[idx].self_attn = MoCSdpaAttention(
+            self.config,
+            layer_idx=idx,
+            cross_attend=False,
+            attention_option=attention_option,
+        )
+        return
 
 
 # class CRVExtractionPipeline(TokenClassificationPipeline):

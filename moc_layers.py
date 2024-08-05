@@ -15,6 +15,7 @@ from transformers import (
     StaticCache,
     AutoTokenizer,
     ROPE_INIT_FUNCTIONS,
+    AutoConfig,
 )
 from transformers.activations import ACT2FN
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
@@ -271,13 +272,14 @@ class LlamaRotaryEmbedding(nn.Module):
 
     @torch.no_grad()
     def forward(self, x, position_ids):
+
         if "dynamic" in self.rope_type:
             self._dynamic_frequency_update(position_ids, device=x.device)
 
         # Core RoPE block
         inv_freq_expanded = (
             self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
-        )
+        ).to(x.device)
         position_ids_expanded = position_ids[:, None, :].float()
         # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
         device_type = x.device.type
@@ -537,7 +539,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
-class LlamaAttention(nn.Module):
+class LlamaAttention(nn.Module):  # original
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
     def __init__(self, config: LlamaConfig, layer_idx: Optional[int] = None):
@@ -719,12 +721,16 @@ class LlamaAttention(nn.Module):
         return attn_output, attn_weights, past_key_value
 
 
-class LlamaSdpaAttention(LlamaAttention):
+class LlamaSdpaAttention1(LlamaAttention):  # fixme
     """
     Llama attention module using torch.nn.functional.scaled_dot_product_attention. This module inherits from
     `LlamaAttention` as the weights of the module stays untouched. The only changes are on the forward pass to adapt to
     SDPA API.
     """
+
+    # hf_model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
+    # hf_token = "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"
+    # config = AutoConfig.from_pretrained(hf_model_path, use_auth_token=hf_token)
 
     # Adapted from LlamaAttention.forward
     def forward(
@@ -783,6 +789,181 @@ class LlamaSdpaAttention(LlamaAttention):
             )
             cos, sin = self.rotary_emb(value_states, position_ids)
         else:
+
+            cos, sin = position_embeddings
+
+            # fixme:
+            # start modify
+            if (
+                not position_embeddings[0].shape[1] == hidden_states.shape[2]
+            ):  # h: [b, h, seq_len, d_model], pe[0]: [b, seq_len, dmodel]
+
+                self.rotary_emb = LlamaRotaryEmbedding(config=self.config)
+                seq_len = hidden_states.size(1)
+
+                position_ids = (
+                    torch.arange(seq_len, device=hidden_states.device, dtype=torch.long)
+                    .unsqueeze(0)
+                    .expand(hidden_states.size(0), -1)
+                )
+                cos, sin = self.rotary_emb(hidden_states, position_ids)
+            # end modify
+
+        # print(
+        #     f"q and k before apply rotary emb, sin, cos: ",
+        #     query_states.shape,
+        #     key_states.shape,
+        #     sin.shape,
+        #     cos.shape,
+        # )
+        query_states, key_states = apply_rotary_pos_emb(
+            query_states, key_states, cos, sin
+        )
+
+        if past_key_value is not None:
+            # sin and cos are specific to RoPE models; cache_position needed for the static cache
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            key_states, value_states = past_key_value.update(
+                key_states, value_states, self.layer_idx, cache_kwargs
+            )
+
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+        causal_mask = attention_mask
+        if attention_mask is not None:
+            causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]
+
+        # SDPA with memory-efficient backend is currently (torch==2.1.2) bugged with non-contiguous inputs with custom attn_mask,
+        # Reference: https://github.com/pytorch/pytorch/issues/112577.
+        if query_states.device.type == "cuda" and causal_mask is not None:
+            query_states = query_states.contiguous()
+            key_states = key_states.contiguous()
+            value_states = value_states.contiguous()
+
+        # We dispatch to SDPA's Flash Attention or Efficient kernels via this `is_causal` if statement instead of an inline conditional assignment
+        # in SDPA to support both torch.compile's dynamic shapes and full graph options. An inline conditional prevents dynamic shapes from compiling.
+        is_causal = True if causal_mask is None and q_len > 1 else False
+
+        attn_output = torch.nn.functional.scaled_dot_product_attention(
+            query_states,
+            key_states,
+            value_states,
+            attn_mask=causal_mask,
+            dropout_p=self.attention_dropout if self.training else 0.0,
+            is_causal=is_causal,
+        )
+
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.view(bsz, q_len, -1)
+
+        attn_output = self.o_proj(attn_output)
+
+        return attn_output, None, past_key_value
+
+
+class LlamaSdpaAttention(LlamaAttention):
+    """
+    Llama attention module using torch.nn.functional.scaled_dot_product_attention. This module inherits from
+    `LlamaAttention` as the weights of the module stays untouched. The only changes are on the forward pass to adapt to
+    SDPA API.
+    """
+
+    # Adapted from LlamaAttention.forward
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Cache] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[
+            Tuple[torch.Tensor, torch.Tensor]
+        ] = None,  # will become mandatory in v4.45
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        if output_attentions:
+            # TODO: Improve this warning with e.g. `model.config.attn_implementation = "manual"` once this is implemented.
+            logger.warning_once(
+                "LlamaModel is using LlamaSdpaAttention, but `torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to the manual attention implementation, "
+                'but specifying the manual implementation will be required from Transformers version v5.0.0 onwards. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
+            )
+            return super().forward(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+            )
+
+        bsz, q_len, _ = hidden_states.size()
+
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+
+        query_states = query_states.view(
+            bsz, q_len, self.num_heads, self.head_dim
+        ).transpose(1, 2)
+        key_states = key_states.view(
+            bsz, q_len, self.num_key_value_heads, self.head_dim
+        ).transpose(1, 2)
+        value_states = value_states.view(
+            bsz, q_len, self.num_key_value_heads, self.head_dim
+        ).transpose(1, 2)
+        # print(
+        #     "position emb: ",
+        #     type(position_embeddings),
+        #     position_embeddings[0].shape,
+        #     position_ids.shape,
+        # )
+
+        seq_len = value_states.shape[2]
+
+        if position_embeddings is None or not (
+            position_embeddings[0].shape[1] == seq_len
+        ):
+            # print(
+            #     "if position_embeddings[0].shape[1] == value_states.shape[1]: ",
+            #     position_embeddings is None,
+            #     position_embeddings[0].shape[1] == value_states.shape[1],
+            # )
+            logger.warning_once(
+                "The attention layers in this model are transitioning from computing the RoPE embeddings internally "
+                "through `position_ids` (2D tensor with the indexes of the tokens), to using externally computed "
+                "`position_embeddings` (Tuple of tensors, containing cos and sin). In v4.45 `position_ids` will be "
+                "removed and `position_embeddings` will be mandatory."
+            )
+            if not position_ids.shape[1] == seq_len:
+                # print(
+                #     "position_ids.shape, value_states.shape, position_embeddings.shape: ",
+                #     position_ids.shape,
+                #     value_states.shape,
+                #     position_embeddings[0].shape,
+                # )
+                position_ids = (
+                    torch.arange(seq_len, device=value_states.device, dtype=torch.long)
+                    .unsqueeze(0)
+                    .expand(hidden_states.size(0), -1)
+                )
+                # print(
+                #     "after position_ids.shape, value_states.shape: ",
+                #     position_ids.shape,
+                #     value_states.shape,
+                # )
+            cos, sin = self.rotary_emb(value_states, position_ids)
+        else:
+            # print(
+            #     "position_ids.shape, value_states.shape, position_embeddings.shape: ",
+            #     position_ids.shape,
+            #     value_states.shape,
+            #     position_embeddings[0].shape,
+            # )
             cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(
             query_states, key_states, cos, sin
@@ -852,6 +1033,18 @@ class LlamaDecoderLayer(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
 
+        # start modify:
+        self.layer_idx = layer_idx
+        self.is_crv_cat = False
+        self.test_use_cat = False
+
+        if self.test_use_cat:
+            filename = "data/crvs.pt"
+            loaded_crvs = torch.load(filename)
+            self.layer_crv = loaded_crvs[self.layer_idx]
+
+        # end modify
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -890,6 +1083,7 @@ class LlamaDecoderLayer(nn.Module):
                 Arbitrary kwargs to be ignored, used for FSDP and other methods that injects code
                 into the model
         """
+
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
@@ -945,14 +1139,6 @@ class MoCLlamaDecoderLayer(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
         self.layer_idx = layer_idx
-        self.is_crv_cat = False
-        self.test_use_cat = True
-        if self.test_use_cat:
-            filename = "data/crvs.pt"
-            loaded_crvs = torch.load(filename)
-            # print("loaded crvs from moc layer: ", len(loaded_crvs), loaded_crvs.shape)
-            self.layer_crv = loaded_crvs[self.layer_idx]
-            # print("self.layer_crv.shape: ", self.layer_crv.shape)
 
     def forward(
         self,
@@ -1098,7 +1284,12 @@ class LlamaModel(LlamaPreTrainedModel):
         config: LlamaConfig
     """
 
-    def __init__(self, config: LlamaConfig):
+    def __init__(
+        self,
+        config: LlamaConfig,
+        layers_to_concat: list = [0],
+        concat_crv_to_h: bool = True,
+    ):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -1118,6 +1309,32 @@ class LlamaModel(LlamaPreTrainedModel):
 
         # Initialize weights and apply final processing
         self.post_init()
+
+        self.layers_to_concat = layers_to_concat
+        self.concat_crv_to_h = concat_crv_to_h
+        self.is_crv_concatenated = False
+        if self.concat_crv_to_h:
+            filename = "data/crvs.pt"
+            self.loaded_crvs = torch.load(filename)
+            # print("loaded crvs from moc layer: ", len(loaded_crvs), loaded_crvs.shape)
+
+            # print("self.layer_crv.shape: ", self.layer_crv.shape)
+
+    # new method
+    def set_layers_to_concat(self, layers_to_concat):
+        self.layers_to_concat = layers_to_concat
+
+    # new method
+    def set_is_crv_concatenated(self, is_crv_concatenated):
+        self.is_crv_concatenated = is_crv_concatenated
+
+    # new method
+    def get_layers_to_concat(self):
+        return self.layers_to_concat
+
+    # new method
+    def get_is_crv_concatenated(self):
+        return self.is_crv_concatenated
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -1139,6 +1356,7 @@ class LlamaModel(LlamaPreTrainedModel):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
+        # print("position_ids: ", position_ids)
         output_attentions = (
             output_attentions
             if output_attentions is not None
@@ -1208,7 +1426,7 @@ class LlamaModel(LlamaPreTrainedModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
-        for decoder_layer in self.layers:
+        for layer_idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
@@ -1225,6 +1443,29 @@ class LlamaModel(LlamaPreTrainedModel):
                     position_embeddings,
                 )
             else:
+
+                # start modify
+
+                if (
+                    self.concat_crv_to_h
+                    and not self.is_crv_concatenated
+                    and (layer_idx in self.layers_to_concat)
+                ):
+                    self.layer_crv = self.loaded_crvs[layer_idx]
+
+                    # print("concating ... ")
+                    self.layer_crv = self.layer_crv.to(hidden_states.device)
+                    print(
+                        f"hidden states before cat at layer {layer_idx}: ",
+                        hidden_states.shape,
+                        hidden_states[0][0],
+                    )
+                    # hidden_states = torch.cat([hidden_states, self.layer_crv[:, :50, :]], dim=1)
+                    hidden_states = torch.cat([self.layer_crv, hidden_states], dim=1)
+                    print("hidden states after cat: ", hidden_states.shape)
+                    self.is_crv_concatenated = True
+
+                # end modify
                 layer_outputs = decoder_layer(
                     hidden_states,
                     attention_mask=causal_mask,
@@ -1350,12 +1591,14 @@ class LlamaModel(LlamaPreTrainedModel):
 class LlamaForCausalLM(LlamaPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, config):
+    def __init__(self, config, layers_to_concat=[0], concat_crv_to_h=True):
         super().__init__(config)
-        self.model = LlamaModel(config)
+        self.model = LlamaModel(
+            config, layers_to_concat=layers_to_concat, concat_crv_to_h=concat_crv_to_h
+        )
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-
+        print("config: ", config)
         # Initialize weights and apply final processing
         self.post_init()
 

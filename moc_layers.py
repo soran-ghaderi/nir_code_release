@@ -1452,6 +1452,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     and (layer_idx in self.layers_to_concat)
                 ):
                     self.layer_crv = self.loaded_crvs[layer_idx]
+                    # self.layer_crv = self.loaded_crvs[layer_idx + 15] # this works fine and is quite interesting -> explore added depth to the model
 
                     # print("concating ... ")
                     self.layer_crv = self.layer_crv.to(hidden_states.device)

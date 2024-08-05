@@ -132,6 +132,8 @@ def generate_text(
     no_repeat_ngram_size=1,
     cross_attend=False,
     config=None,
+    test_layers=[],
+    output_file="results/concat_different_layers.csv",
 ):
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -163,12 +165,51 @@ def generate_text(
     results = []
 
     # Generate text using the model
-    for idx in range(config.num_hidden_layers):
-        print(f"concatenate at layer {idx}:")
+    if len(test_layers) > 0:
+        for idx in test_layers:
+            print(f"concatenate at layer {idx}:")
 
-        model.model.set_layers_to_concat(layers_to_concat=[idx])
-        model.model.set_is_crv_concatenated(is_crv_concatenated=False)
+            model.model.set_layers_to_concat(layers_to_concat=[idx])
+            model.model.set_is_crv_concatenated(is_crv_concatenated=False)
 
+            with torch.no_grad():
+                outputs = model.generate(
+                    input_ids,
+                    max_length=max_length,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    do_sample=True,
+                    num_return_sequences=num_return_sequences,
+                    repetition_penalty=repetition_penalty,
+                    no_repeat_ngram_size=no_repeat_ngram_size,
+                    streamer=streamer,
+                )
+
+            generated_text = outputs[0][input_ids.shape[-1] :]
+            decoded_text = tokenizer.decode(generated_text, skip_special_tokens=True)
+
+            results.append(
+                {
+                    "Layer idx": idx,
+                    "Generated output": decoded_text,
+                }
+            )
+        write_results_to_file(
+            output_file,
+            results,
+            prompt,
+            max_length=50,
+            max_new_tokens=100,
+            num_return_sequences=1,
+            temperature=0.8,
+            top_k=50,
+            top_p=0.95,
+            repetition_penalty=1.2,
+            no_repeat_ngram_size=1,
+        )
+    else:
         with torch.no_grad():
             outputs = model.generate(
                 input_ids,
@@ -187,29 +228,7 @@ def generate_text(
         generated_text = outputs[0][input_ids.shape[-1] :]
         decoded_text = tokenizer.decode(generated_text, skip_special_tokens=True)
 
-        results.append(
-            {
-                "Layer idx": idx,
-                "Generated output": decoded_text,
-            }
-        )
-        print(results)
-    output_file = "results/concat_different_layers.csv"
-    write_results_to_file(
-        output_file,
-        results,
-        prompt,
-        max_length=50,
-        max_new_tokens=100,
-        num_return_sequences=1,
-        temperature=0.8,
-        top_k=50,
-        top_p=0.95,
-        repetition_penalty=1.2,
-        no_repeat_ngram_size=1,
-    )
-
-    return generated_text
+    return decoded_text
 
 
 def main():
@@ -289,6 +308,7 @@ def main():
         no_repeat_ngram_size=3,
         cross_attend=False,
         config=config,
+        test_layers=[2],
     )
 
     # print(f"Generated text after: {generated_text}")

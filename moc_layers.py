@@ -1287,7 +1287,7 @@ class LlamaModel(LlamaPreTrainedModel):
     def __init__(
         self,
         config: LlamaConfig,
-        layers_to_concat: list = [0],
+        layers_to_concat: list = [],
         concat_crv_to_h: bool = True,
     ):
         super().__init__(config)
@@ -1592,7 +1592,7 @@ class LlamaModel(LlamaPreTrainedModel):
 class LlamaForCausalLM(LlamaPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, config, layers_to_concat=[0], concat_crv_to_h=True):
+    def __init__(self, config, layers_to_concat=[], concat_crv_to_h=True):
         super().__init__(config)
         self.model = LlamaModel(
             config, layers_to_concat=layers_to_concat, concat_crv_to_h=concat_crv_to_h

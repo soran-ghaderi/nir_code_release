@@ -240,14 +240,14 @@ def main():
         print("Using CPU")
 
     # Path to the pretrained model and tokenizer
-    # hf_model_path = "meta-llama/Meta-Llama-3-8B"
     hf_model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
     # hf_model_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
-    # hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B"
     hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B-Instruct"
     # hf_tokenizer_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
+    # hf_model_path = "meta-llama/Meta-Llama-3-8B"
+    # hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B"
     hf_token = "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"
     config = AutoConfig.from_pretrained(hf_model_path, use_auth_token=hf_token)
     print(config)
@@ -308,7 +308,7 @@ def main():
         no_repeat_ngram_size=3,
         cross_attend=False,
         config=config,
-        test_layers=[2],
+        test_layers=[5, 10],
     )
 
     # print(f"Generated text after: {generated_text}")

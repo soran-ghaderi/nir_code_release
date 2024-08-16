@@ -124,7 +124,6 @@ class OptimizedCRVHandler:
     def decompress_crv(self, compressed_crv):
         decompressor = zstd.ZstdDecompressor()
 
-        # Convert PyTorch dtype string to NumPy dtype
         torch_dtype = compressed_crv["dtype"]
         if torch_dtype.startswith("torch."):
             np_dtype = self.dtype_map.get(torch_dtype)
@@ -135,7 +134,7 @@ class OptimizedCRVHandler:
 
         crv_array = np.frombuffer(
             decompressor.decompress(compressed_crv["data"]), dtype=np_dtype
-        )
+        ).copy()  # Make the array writable
 
         crv = torch.from_numpy(crv_array.reshape(compressed_crv["shape"]))
 
@@ -301,10 +300,26 @@ class CRVIntegrator:
             logger.info(f"Truncated to match dimensions. New shape: {min_dim}")
 
         try:
+            # Move tensors to the same device
+            device = query.device
+            self.current_crvs = self.current_crvs.to(device)
+
             similarities = torch.nn.functional.cosine_similarity(
                 query.unsqueeze(1), self.current_crvs
             )
-            most_similar_idx = torch.argmax(similarities)
+            logger.info(f"Similarities shape: {similarities.shape}")
+
+            most_similar_idx = torch.argmax(similarities).item()
+            logger.info(f"Most similar index: {most_similar_idx}")
+
+            if most_similar_idx < 0 or most_similar_idx >= self.current_crvs.size(0):
+                logger.warning(
+                    f"Invalid index {most_similar_idx}. Using fallback method."
+                )
+                most_similar_idx = torch.randint(
+                    0, self.current_crvs.size(0), (1,)
+                ).item()
+
             logger.info(f"Found most similar CRV at index: {most_similar_idx}")
             return self.current_crvs[most_similar_idx]
         except RuntimeError as e:
@@ -313,9 +328,35 @@ class CRVIntegrator:
 
     def integrate_crv(self, hidden_states, crv, layer_idx):
         integrated = list(hidden_states)
-        integrated[layer_idx] = torch.cat(
-            [hidden_states[layer_idx], crv.to(hidden_states[layer_idx].device)], dim=-1
-        )
+        target_hidden_state = hidden_states[layer_idx]
+
+        logger.info(f"Target hidden state shape: {target_hidden_state.shape}")
+        logger.info(f"CRV shape: {crv.shape}")
+
+        # Reshape CRV to match the dimensions of the hidden state
+        if crv.dim() == 1:
+            crv = crv.unsqueeze(0).unsqueeze(0)  # Add batch and sequence dimensions
+        elif crv.dim() == 2:
+            crv = crv.unsqueeze(1)  # Add sequence dimension
+
+        # Repeat CRV to match the sequence length of the hidden state
+        crv = crv.repeat(1, target_hidden_state.size(1), 1)
+
+        logger.info(f"Reshaped CRV shape: {crv.shape}")
+
+        # Ensure the CRV is on the same device as the hidden states
+        crv = crv.to(target_hidden_state.device)
+
+        try:
+            integrated[layer_idx] = torch.cat([target_hidden_state, crv], dim=-1)
+            logger.info(f"Integrated hidden state shape: {integrated[layer_idx].shape}")
+        except RuntimeError as e:
+            logger.error(f"Error during integration: {str(e)}")
+            logger.error(
+                f"Target hidden state device: {target_hidden_state.device}, CRV device: {crv.device}"
+            )
+            raise
+
         return tuple(integrated)
 
 
@@ -360,21 +401,40 @@ def main():
             hidden_states = outputs.hidden_states
 
             query = hidden_states[-1].mean(dim=1)
+            logger.info(f"Generated query shape: {query.shape}")
+
             similar_crv = crv_integrator.find_similar_crv(query)
 
             if similar_crv is not None:
-                integrated_hidden_states = crv_integrator.integrate_crv(
-                    hidden_states, similar_crv, layer_idx=10
+                logger.info(f"Similar CRV shape: {similar_crv.shape}")
+                logger.info(
+                    f"Hidden states structure: {[hs.shape for hs in hidden_states]}"
                 )
 
-                logits = model.lm_head(integrated_hidden_states[-1])
-                next_token = torch.argmax(logits[:, -1, :])
-                generated_text = tokenizer.decode(next_token.item())
+                try:
+                    integrated_hidden_states = crv_integrator.integrate_crv(
+                        hidden_states, similar_crv, layer_idx=10
+                    )
+                    logger.info(
+                        f"Integrated hidden states structure: {[hs.shape for hs in integrated_hidden_states]}"
+                    )
 
-                logger.info(f"Input: {tokenizer.decode(input_ids[0])}")
-                logger.info(f"Generated: {generated_text}")
+                    logits = model.lm_head(integrated_hidden_states[-1])
+                    next_token = torch.argmax(logits[:, -1, :])
+                    generated_text = tokenizer.decode(next_token.item())
+
+                    input_text = tokenizer.decode(input_ids[0])
+                    logger.info(f"Input text: {input_text}")
+                    logger.info(f"Generated next token: {generated_text}")
+                    logger.info(f"Full output: {input_text}{generated_text}")
+                except Exception as e:
+                    logger.error(
+                        f"Error during CRV integration or text generation: {str(e)}"
+                    )
             else:
-                logger.warning("No similar CRV found.")
+                logger.warning(
+                    "No similar CRV found or error occurred during similarity computation."
+                )
 
         break  # Just for demonstration, remove this in actual use
 

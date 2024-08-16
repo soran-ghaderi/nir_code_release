@@ -1,4 +1,7 @@
 import os
+from typing import List, Union
+import logging
+from zlib import compressobj
 
 import torch
 from torch.utils.data import Dataset, DataLoader, Subset
@@ -10,6 +13,10 @@ from sklearn.neighbors import NearestNeighbors
 from scipy.sparse import csr_matrix
 import zstandard as zstd
 
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 from moc_layers import LlamaSdpaAttention, LlamaForCausalLM
 
 # Constants
@@ -17,7 +24,7 @@ MAX_LENGTH = 512
 BATCH_SIZE = 4
 NUM_CONTEXTS = 20
 CRV_DIM = 4096  # Assuming LLaMA hidden size
-SUBSET_SIZE = 100
+SUBSET_SIZE = 20
 CRV_SAVE_BATCH = 20
 
 
@@ -82,94 +89,78 @@ def load_custom_transformer(pretrained_model_path, tokenizer_path, config, hf_to
 
 
 class OptimizedCRVHandler:
-    def __init__(self, compression_ratio=0.1, precision=16, use_sparse=True):
+    def __init__(self, compression_ratio=0.1, precision=16):
         self.compression_ratio = compression_ratio
         self.precision = precision
-        self.use_sparse = use_sparse
-        self.compressor = zstd.ZstdCompressor(level=22)  # High compression level
+        self.compressor = zstd.ZstdCompressor(level=22)
+        self.dtype_map = {
+            "torch.float16": np.float16,
+            "torch.float32": np.float32,
+            "torch.int8": np.int8,
+        }
 
     def compress_crv(self, crv):
-        # Ensure we're working with a float tensor for quantile operation
-        crv_float = crv.float()
+        crv_cpu = crv.cpu().detach()
+        original_shape = crv_cpu.shape
+        crv_flat = crv_cpu.reshape(-1)
 
-        # Prune small values
-        threshold = torch.quantile(torch.abs(crv_float), 1 - self.compression_ratio)
-        mask = torch.abs(crv_float) > threshold
-        pruned_crv = crv_float * mask
+        threshold = np.quantile(np.abs(crv_flat.numpy()), 1 - self.compression_ratio)
+        mask = torch.abs(crv_flat) > threshold
+        pruned_crv = crv_flat * mask
 
-        # Convert to lower precision after pruning
         if self.precision == 16:
             pruned_crv = pruned_crv.half()
         elif self.precision == 8:
-            pruned_crv = pruned_crv.to(torch.int8)
+            pruned_crv = (pruned_crv * 127).to(torch.int8)
 
-        if self.use_sparse:
-            # Convert to sparse format
-            indices = torch.nonzero(pruned_crv).cpu().numpy()
-            values = pruned_crv[pruned_crv != 0].cpu().numpy()
-            shape = pruned_crv.shape
-            sparse_crv = csr_matrix(
-                (values, (indices[:, 0], indices[:, 1])), shape=shape
-            )
+        compressed_data = self.compressor.compress(pruned_crv.numpy().tobytes())
 
-            # Compress the sparse data
-            compressed_data = self.compressor.compress(sparse_crv.data.tobytes())
-            compressed_indices = self.compressor.compress(sparse_crv.indices.tobytes())
-            compressed_indptr = self.compressor.compress(sparse_crv.indptr.tobytes())
-
-            return {
-                "data": compressed_data,
-                "indices": compressed_indices,
-                "indptr": compressed_indptr,
-                "shape": shape,
-                "dtype": str(pruned_crv.dtype),
-            }
-        else:
-            # Compress the pruned tensor directly
-            return {
-                "data": self.compressor.compress(pruned_crv.cpu().numpy().tobytes()),
-                "shape": pruned_crv.shape,
-                "dtype": str(pruned_crv.dtype),
-            }
+        return {
+            "data": compressed_data,
+            "shape": original_shape,
+            "dtype": str(pruned_crv.dtype),
+        }
 
     def decompress_crv(self, compressed_crv):
         decompressor = zstd.ZstdDecompressor()
 
-        if self.use_sparse:
-            data = np.frombuffer(
-                decompressor.decompress(compressed_crv["data"]),
-                dtype=np.dtype(compressed_crv["dtype"]),
-            )
-            indices = np.frombuffer(
-                decompressor.decompress(compressed_crv["indices"]), dtype=np.int32
-            )
-            indptr = np.frombuffer(
-                decompressor.decompress(compressed_crv["indptr"]), dtype=np.int32
-            )
-
-            sparse_crv = csr_matrix(
-                (data, indices, indptr), shape=compressed_crv["shape"]
-            )
-            crv = torch.from_numpy(sparse_crv.toarray())
+        # Convert PyTorch dtype string to NumPy dtype
+        torch_dtype = compressed_crv["dtype"]
+        if torch_dtype.startswith("torch."):
+            np_dtype = self.dtype_map.get(torch_dtype)
+            if np_dtype is None:
+                raise ValueError(f"Unsupported dtype: {torch_dtype}")
         else:
-            crv_array = np.frombuffer(
-                decompressor.decompress(compressed_crv["data"]),
-                dtype=np.dtype(compressed_crv["dtype"]),
-            )
-            crv = torch.from_numpy(crv_array.reshape(compressed_crv["shape"]))
+            np_dtype = np.dtype(torch_dtype)
 
-        return crv.float()  # Convert back to float32 for compatibility
+        crv_array = np.frombuffer(
+            decompressor.decompress(compressed_crv["data"]), dtype=np_dtype
+        )
+
+        crv = torch.from_numpy(crv_array.reshape(compressed_crv["shape"]))
+
+        if crv.dtype == torch.int8:
+            crv = crv.float() / 127
+        return crv.float()  # Always return float32 for consistency
+
+    def load_crvs(self, file_path):
+        compressed_crvs = torch.load(file_path, map_location="cpu")
+        return self.decompress_crv(compressed_crvs)
 
 
 class CRVGenerator:
-    def __init__(self, model):
+    def __init__(self, model, save_dir="crv_batches", target_layer=10):
         self.model = model
+        self.save_dir = save_dir
+        self.target_layer = target_layer
         self.crv_handler = OptimizedCRVHandler()
+        os.makedirs(self.save_dir, exist_ok=True)
 
     @torch.no_grad()
     def generate_crvs(self, dataloader):
         self.model.eval()
         crvs = []
+        total_saved = 0
 
         for i, batch in enumerate(tqdm(dataloader, desc="Generating CRVs")):
             input_ids = batch["input_ids"].to(self.model.device)
@@ -178,72 +169,152 @@ class CRVGenerator:
             outputs = self.model(
                 input_ids, attention_mask=attention_mask, output_hidden_states=True
             )
-            hidden_states = outputs.hidden_states
+            hidden_state = outputs.hidden_states[self.target_layer]
 
-            # Stack hidden states from all layers
-            batch_crvs = torch.stack(
-                hidden_states, dim=1
-            )  # [batch_size, num_layers, seq_len, hidden_size]
-            crvs.append(batch_crvs.cpu())  # Move to CPU to save GPU memory
+            crvs.append(hidden_state.cpu())
 
-            # Save every CRV_SAVE_BATCH
-            if (i + 1) % (CRV_SAVE_BATCH // BATCH_SIZE) == 0:
-                self.save_crvs(torch.cat(crvs, dim=0), f"data/crvs_batch_{i + 1}.pt")
-                crvs = []  # Clear the list to free up memory
+            if len(crvs) * hidden_state.shape[0] >= CRV_SAVE_BATCH:
+                self.save_crvs(
+                    torch.cat(crvs, dim=0), f"crvs_batch_{total_saved + 1}.pt"
+                )
+                total_saved += len(crvs) * hidden_state.shape[0]
+                crvs = []
 
-        # Save any remaining CRVs
         if crvs:
-            self.save_crvs(torch.cat(crvs, dim=0), f"data/crvs_batch_final.pt")
+            self.save_crvs(torch.cat(crvs, dim=0), f"crvs_batch_final.pt")
+            total_saved += len(crvs) * hidden_state.shape[0]
+
+        logger.info(f"Total CRVs saved: {total_saved}")
 
     def save_crvs(self, crvs, filename):
         compressed_crvs = self.crv_handler.compress_crv(crvs)
         file_path = os.path.join(self.save_dir, filename)
         torch.save(compressed_crvs, file_path)
-        print(f"Saved compressed CRVs to {file_path}")
+        logger.info(f"Saved compressed CRVs to {file_path}")
+
+        # Verify saved file
+        try:
+            self.load_crvs(file_path)
+            logger.info(f"Successfully verified saved CRVs in {file_path}")
+        except Exception as e:
+            logger.error(f"Error verifying saved CRVs in {file_path}: {str(e)}")
+
+    def load_crvs(self, file_path):
+        compressed_crvs = torch.load(file_path, map_location="cpu")
+        return self.crv_handler.decompress_crv(compressed_crvs)
 
 
 class CRVIntegrator:
-    def __init__(self, model, crv_files):
+    def __init__(self, model, crv_source: Union[str, List[str]]):
         self.model = model
-        self.crv_files = crv_files
+        self.crv_files = self._get_crv_files(crv_source)
         self.current_crvs = None
         self.current_file_idx = 0
-        self.load_next_crvs()
         self.crv_handler = OptimizedCRVHandler()
+        if not self.crv_files:
+            logger.warning(
+                "No CRV files found. CRVIntegrator may not function as expected."
+            )
+        else:
+            self.load_next_crvs()
 
-        self.knn = NearestNeighbors(n_neighbors=1, metric="cosine")
-        self.update_knn()
+    def _get_crv_files(self, crv_source: Union[str, List[str]]) -> List[str]:
+        if isinstance(crv_source, str):
+            if os.path.isdir(crv_source):
+                files = [
+                    os.path.join(crv_source, f)
+                    for f in os.listdir(crv_source)
+                    if f.startswith("crvs_batch_") and f.endswith(".pt")
+                ]
+                logger.info(f"Found {len(files)} CRV files in directory: {crv_source}")
+                return files
+            elif os.path.isfile(crv_source) and crv_source.endswith(".pt"):
+                logger.info(f"Using single CRV file: {crv_source}")
+                return [crv_source]
+            else:
+                logger.error(f"Invalid crv_source: {crv_source}")
+                raise ValueError(f"Invalid crv_source: {crv_source}")
+        elif isinstance(crv_source, list):
+            valid_files = [
+                f for f in crv_source if f.endswith(".pt") and os.path.isfile(f)
+            ]
+            logger.info(f"Using {len(valid_files)} valid CRV files from provided list")
+            return valid_files
+        else:
+            logger.error(
+                "crv_source must be either a string (directory or file path) or a list of file paths"
+            )
+            raise TypeError(
+                "crv_source must be either a string (directory or file path) or a list of file paths"
+            )
 
     def load_next_crvs(self):
         if self.current_file_idx < len(self.crv_files):
-            file_path = os.path.join(
-                self.crv_dir, self.crv_files[self.current_file_idx]
-            )
-            compressed_crvs = torch.load(file_path)
-            self.current_crvs = self.crv_handler.decompress_crv(compressed_crvs)
-            self.current_file_idx += 1
-            return True
-        return False
+            file_path = self.crv_files[self.current_file_idx]
+            logger.info(f"Attempting to load CRV file: {file_path}")
+            try:
+                if not os.path.exists(file_path):
+                    logger.error(f"File does not exist: {file_path}")
+                    raise FileNotFoundError(f"No such file or directory: '{file_path}'")
 
-    def update_knn(self):
-        if self.current_crvs is not None:
-            self.knn.fit(self.current_crvs.view(-1, CRV_DIM).cpu().numpy())
+                self.current_crvs = self.crv_handler.load_crvs(file_path)
+
+                self.current_file_idx += 1
+                logger.info(f"Successfully loaded CRV file: {file_path}")
+                logger.info(
+                    f"Loaded CRVs shape: {self.current_crvs.shape}, dtype: {self.current_crvs.dtype}"
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Error loading CRV file {file_path}: {str(e)}")
+                self.current_file_idx += 1
+                return self.load_next_crvs()
+        logger.info("No more CRV files to load")
+        return False
 
     def find_similar_crv(self, query):
         if self.current_crvs is None:
+            logger.warning("No CRVs loaded. Cannot find similar CRV.")
             return None
 
-        _, indices = self.knn.kneighbors(query.cpu().numpy().reshape(1, -1))
-        return self.current_crvs[indices[0][0]]
+        logger.info(f"Query shape: {query.shape}")
+        logger.info(f"Current CRVs shape: {self.current_crvs.shape}")
+
+        # Ensure query and CRVs are 2D tensors
+        if query.dim() > 2:
+            query = query.view(query.size(0), -1)
+        if self.current_crvs.dim() > 2:
+            self.current_crvs = self.current_crvs.view(self.current_crvs.size(0), -1)
+
+        logger.info(f"Reshaped query shape: {query.shape}")
+        logger.info(f"Reshaped CRVs shape: {self.current_crvs.shape}")
+
+        # Ensure the last dimension matches
+        if query.size(-1) != self.current_crvs.size(-1):
+            logger.warning(
+                f"Dimension mismatch. Query: {query.size(-1)}, CRVs: {self.current_crvs.size(-1)}"
+            )
+            # Option 1: Truncate the larger dimension
+            min_dim = min(query.size(-1), self.current_crvs.size(-1))
+            query = query[..., :min_dim]
+            self.current_crvs = self.current_crvs[..., :min_dim]
+            logger.info(f"Truncated to match dimensions. New shape: {min_dim}")
+
+        try:
+            similarities = torch.nn.functional.cosine_similarity(
+                query.unsqueeze(1), self.current_crvs
+            )
+            most_similar_idx = torch.argmax(similarities)
+            logger.info(f"Found most similar CRV at index: {most_similar_idx}")
+            return self.current_crvs[most_similar_idx]
+        except RuntimeError as e:
+            logger.error(f"Error computing similarities: {str(e)}")
+            return None
 
     def integrate_crv(self, hidden_states, crv, layer_idx):
         integrated = list(hidden_states)
         integrated[layer_idx] = torch.cat(
-            [
-                hidden_states[layer_idx],
-                crv[layer_idx].to(hidden_states[layer_idx].device),
-            ],
-            dim=-1,
+            [hidden_states[layer_idx], crv.to(hidden_states[layer_idx].device)], dim=-1
         )
         return tuple(integrated)
 
@@ -266,15 +337,12 @@ def main():
 
     # Mode 1: Generate CRVs
     crv_generator = CRVGenerator(model)
-    crv_generator.generate_crvs(train_dataloader)
+    # crv_generator.generate_crvs(train_dataloader)
 
     # Mode 2: Integrate CRVs
-    crv_files = [
-        f
-        for f in os.listdir(".")
-        if f.startswith("data/crvs_batch_") and f.endswith(".pt")
-    ]
-    crv_integrator = CRVIntegrator(model, crv_files)
+    crv_dir = "crv_batches"
+    logger.info(f"Initializing CRVIntegrator with directory: {crv_dir}")
+    crv_integrator = CRVIntegrator(model, crv_dir)
 
     # Test integration
     test_dataset = MathDataset(tokenizer, split="test")
@@ -291,27 +359,24 @@ def main():
             )
             hidden_states = outputs.hidden_states
 
-            # Find similar CRV
             query = hidden_states[-1].mean(dim=1)
             similar_crv = crv_integrator.find_similar_crv(query)
 
             if similar_crv is not None:
-                # Integrate CRV at a specific layer (e.g., layer 10)
                 integrated_hidden_states = crv_integrator.integrate_crv(
                     hidden_states, similar_crv, layer_idx=10
                 )
 
-                # Generate output using integrated hidden states
                 logits = model.lm_head(integrated_hidden_states[-1])
                 next_token = torch.argmax(logits[:, -1, :])
                 generated_text = tokenizer.decode(next_token.item())
 
-                print(f"Input: {tokenizer.decode(input_ids[0])}")
-                print(f"Generated: {generated_text}")
+                logger.info(f"Input: {tokenizer.decode(input_ids[0])}")
+                logger.info(f"Generated: {generated_text}")
             else:
-                print("No similar CRV found.")
+                logger.warning("No similar CRV found.")
 
-            break  # Just for demonstration, remove this in actual use
+        break  # Just for demonstration, remove this in actual use
 
 
 if __name__ == "__main__":

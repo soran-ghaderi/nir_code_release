@@ -1310,7 +1310,7 @@ class LlamaModel(LlamaPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-        self.layers_to_concat = layers_to_concat
+        # self.layers_to_concat = layers_to_concat
         self.concat_crv_to_h = concat_crv_to_h
         self.is_crv_concatenated = False
         if self.concat_crv_to_h:
@@ -1319,10 +1319,17 @@ class LlamaModel(LlamaPreTrainedModel):
             # print("loaded crvs from moc layer: ", len(loaded_crvs), loaded_crvs.shape)
 
             # print("self.layer_crv.shape: ", self.layer_crv.shape)
+        self.crv = None
+        self.crv_layer_idx = None
 
     # new method
-    def set_layers_to_concat(self, layers_to_concat):
-        self.layers_to_concat = layers_to_concat
+
+    def set_crv(self, crv, layer_idx):
+        self.crv = crv
+        self.crv_layer_idx = layer_idx
+
+    def set_layers_to_concat(self, layer_idx):
+        self.crv_layer_idx = layer_idx
 
     # new method
     def set_is_crv_concatenated(self, is_crv_concatenated):
@@ -1449,7 +1456,7 @@ class LlamaModel(LlamaPreTrainedModel):
                 if (
                     self.concat_crv_to_h
                     and not self.is_crv_concatenated
-                    and (layer_idx in self.layers_to_concat)
+                    and layer_idx == self.crv_layer_idx
                 ):
                     self.layer_crv = self.loaded_crvs[layer_idx]
                     # self.layer_crv = self.loaded_crvs[layer_idx + 15] # this works fine and is quite interesting -> explore added depth to the model

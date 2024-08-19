@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Constants
-MAX_LENGTH = 512
+MAX_LENGTH = 100
 BATCH_SIZE = 4
 NUM_CONTEXTS = 20
 CRV_DIM = 4096  # Assuming LLaMA hidden size
@@ -128,9 +128,12 @@ def retrieve_best_crv(query, crvs_file, model, tokenizer, crv_layers):
     # Load pre-trained model and tokenizer
 
     # Load CRVs
-    crvs = torch.load(crvs_file)
+    if isinstance(crvs_file, str):
+        crvs = torch.load(crvs_file)
+    elif isinstance(crvs_file, torch.Tensor):
+        crvs = crvs_file  # (b, num_layers, seq_len, d_model)
 
-    prompt_csv = generate_crvs(
+    query_crv = generate_crvs(
         model,
         tokenizer,
         input=query,
@@ -138,19 +141,15 @@ def retrieve_best_crv(query, crvs_file, model, tokenizer, crv_layers):
         crv_layers=crv_layers,
     )  # shape: (crv_layers, seq_len, d_model)
 
-    print(f"prompt_csv shape: {prompt_csv.shape}")
+    print(f"query_crv shape: {query_crv.shape}")
 
-    # Encode the query
-    inputs = tokenizer(query, return_tensors="pt", truncation=True, max_length=512)
-
-    with torch.no_grad():
-        query_embedding = model(**inputs).last_hidden_state.mean(dim=1)
-
+    crvs = crvs.to(query_crv.device)
     # Compute similarities
-    similarities = torch.cosine_similarity(query_embedding, crvs)
+    similarities = torch.cosine_similarity(query_crv, crvs)
 
     # Get the index of the most similar CRV
     best_crv_index = similarities.argmax().item()
+    print(f"best_crv_index: {best_crv_index}")
 
     return crvs[best_crv_index]
 
@@ -320,8 +319,8 @@ def generate_text(
     if not crv_layer_idx == None:
         print(f"concatenate at layer {crv_layer_idx}:")
 
-        model.model.set_layers_to_concat(layer_idx=crv_layer_idx)
-        model.model.set_is_crv_concatenated(is_crv_concatenated=False)
+        # model.model.set_layers_to_concat(layer_idx=crv_layer_idx)
+        # model.model.set_is_crv_concatenated(is_crv_concatenated=False)
 
         with torch.no_grad():
             outputs = model.generate(
@@ -527,7 +526,7 @@ def main():
         model,
         tokenizer,
         input="dataset",
-        output="data/new_stack.pt",
+        output_file="data/new_stack.pt",
         crv_layers=crv_layers,
     )  # shape: (subset_size, crv_layers, seq_len, d_model)
 
@@ -539,26 +538,27 @@ def main():
     best_crv = retrieve_best_crv(
         query, crvs_file, model, tokenizer, crv_layers=crv_layers
     )
+    print("best_crv.shape: ", best_crv.shape)
     #
     # # Set the CRV in the model (e.g., integrate at layer 5)
-    # model.set_crv(best_crv, layer_idx=5)
+    model.model.set_crv(best_crv, layer_idx=10, crv_layers=crv_layers)
 
-    # generated_text = generate_text(
-    #     model,
-    #     tokenizer,
-    #     prompt=prompt,
-    #     max_length=100,
-    #     max_new_tokens=50,
-    #     num_return_sequences=1,
-    #     temperature=1.0,
-    #     top_k=1,
-    #     top_p=0.95,
-    #     repetition_penalty=1.2,
-    #     no_repeat_ngram_size=3,
-    #     cross_attend=False,
-    #     config=config,
-    #     crv_layer_idx=[5, 10],
-    # )
+    generated_text = generate_text(
+        model,
+        tokenizer,
+        prompt=prompt,
+        # max_length=100,
+        max_new_tokens=50,
+        num_return_sequences=1,
+        temperature=1.0,
+        top_k=1,
+        top_p=0.95,
+        repetition_penalty=1.2,
+        no_repeat_ngram_size=3,
+        cross_attend=False,
+        config=config,
+        crv_layer_idx=[5, 10],
+    )
 
 
 if __name__ == "__main__":

@@ -1311,9 +1311,9 @@ class LlamaModel(LlamaPreTrainedModel):
         self.post_init()
 
         self.layers_to_concat = layers_to_concat
-        self.concat_crv_to_h = concat_crv_to_h
+        self.allow_concat = concat_crv_to_h
         self.is_crv_concatenated = False
-        if self.concat_crv_to_h:
+        if self.allow_concat:
             filename = "data/crvs.pt"
             self.loaded_crvs = torch.load(filename)
             # print("loaded crvs from moc layer: ", len(loaded_crvs), loaded_crvs.shape)
@@ -1462,13 +1462,12 @@ class LlamaModel(LlamaPreTrainedModel):
                 #     self.crv_layer_idx,
                 # )
                 if (
-                    self.concat_crv_to_h
+                    self.allow_concat
                     and not self.is_crv_concatenated
                     and layer_idx == self.crv_layer_idx
                 ):
 
-                    self.layer_crv = self.loaded_crvs[layer_idx]
-                    # self.layer_crv = self.loaded_crvs[layer_idx + 15] # this works fine and is quite interesting -> explore added depth to the model
+                    # self.layer_crv = self.crv[layer_idx + 15] # this works fine and is quite interesting -> explore added depth to the model
                     self.layer_crv = self.crv[
                         self.crv_layers.index(layer_idx)
                     ]  # first find the the index of

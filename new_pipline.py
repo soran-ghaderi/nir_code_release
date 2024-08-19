@@ -2,11 +2,15 @@ import logging
 import random
 
 import numpy as np
+import torch
 from torch.utils.data import Dataset, DataLoader, Subset
 import torch.nn.functional as F
 from blib2to3.pgen2.driver import Optional
-from transformers import AutoTokenizer, AutoModel, LlamaConfig, AutoConfig, TextStreamer
 from datasets import load_dataset
+from transformers import AutoConfig, AutoTokenizer, TextStreamer
+
+
+from moc_layers import LlamaForCausalLM
 
 from main import write_results_to_file
 
@@ -14,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Constants
-MAX_LENGTH = 1024
+MAX_LENGTH = 128
 BATCH_SIZE = 4
 NUM_CONTEXTS = 20
 CRV_DIM = 4096  # Assuming LLaMA hidden size
@@ -56,9 +60,8 @@ class MathDataset(Dataset):
             problem = item.get("problem", "")
             solution = item.get("solution", "")
             question_type = item.get("type", "")
-            input_text = (
-                f"Type: {question_type}\nProblem: {problem}\nSolution: {solution}"
-            )
+            input_text = f"Problem: {problem}\nSolution: {solution}"
+
             # encoded = self.tokenizer.encode_plus(
             #     input_text,
             #     max_length=self.max_length,
@@ -80,6 +83,63 @@ class MathDataset(Dataset):
             }
         except Exception as e:
             print(f"Error processing item at index {idx}: {str(e)}")
+            # Return a dummy item in case of error
+            return {
+                "input_ids": torch.zeros(self.max_length, dtype=torch.long),
+                "attention_mask": torch.zeros(self.max_length, dtype=torch.long),
+            }
+
+
+class GSM8KDataset(Dataset):
+    def __init__(
+        self,
+        tokenizer,
+        split="train",
+        max_length=MAX_LENGTH,
+        subset_size=SUBSET_SIZE,
+        seed=42,
+    ):
+        self.dataset = load_dataset("gsm8k", "main", split=split)
+        if subset_size is not None:
+            set_seed(seed)
+            self.dataset = self.dataset.select(
+                random.sample(
+                    range(len(self.dataset)), min(subset_size, len(self.dataset))
+                )
+            )
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        set_seed(seed)
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        try:
+            item = self.dataset[idx]
+            question = item.get("question", "")
+            answer = item.get("answer", "")
+            input_text = f"Problem: {question}\nSolution: {answer}"
+            # input_text = f"Solution: {answer}"
+            print(
+                idx, "input_text: ", f"Problem: {question}\nSolution: {answer}", "\n\n"
+            )
+            encoded = self.tokenizer(
+                input_text,
+                max_length=self.max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            )
+
+            logger.debug(f"Processed item {idx}: {input_text[:100]}...")
+
+            return {
+                "input_ids": encoded["input_ids"].squeeze(),
+                "attention_mask": encoded["attention_mask"].squeeze(),
+            }
+        except Exception as e:
+            logger.error(f"Error processing item at index {idx}: {str(e)}")
             # Return a dummy item in case of error
             return {
                 "input_ids": torch.zeros(self.max_length, dtype=torch.long),
@@ -132,7 +192,8 @@ def retrieve_best_crv(query, crvs_file, model, tokenizer, crv_layers, seed=42):
     crvs_norm = F.normalize(crvs_last.reshape(crvs_last.shape[0], -1), p=2, dim=1)
 
     # Compute similarities
-    similarities = torch.mm(query_crv_norm, crvs_norm.t()).squeeze()
+    # similarities = torch.mm(query_crv_norm, crvs_norm.t()).squeeze()
+    similarities = torch.cosine_similarity(query_crv_norm, crvs_norm, -1)
 
     # Check for NaN or Inf
     if torch.isnan(similarities).any() or torch.isinf(similarities).any():
@@ -183,55 +244,6 @@ def retrieve_best_crv(query, crvs_file, model, tokenizer, crv_layers, seed=42):
     print(f"best_crv_index: {best_crv_index}")
 
     return crvs[best_crv_index]
-
-
-# def main():
-#     # Load model and tokenizer
-#     hf_model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
-#     hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B-Instruct"
-#     hf_token = "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"
-#     config = AutoConfig.from_pretrained(hf_model_path, use_auth_token=hf_token)
-#     model, tokenizer = load_custom_transformer(
-#         hf_model_path, hf_tokenizer_path, config=config, hf_token=hf_token
-#     )
-#
-#     entry_input = {
-#         "problem": "A board game spinner is divided into three parts labeled $A$, $B$  and $C$. The probability of the spinner landing on $A$ is $\\frac{1}{3}$ and the probability of the spinner landing on $B$ is $\\frac{5}{12}$.  What is the probability of the spinner landing on $C$? Express your answer as a common fraction.",
-#         "level": "Level 1",
-#         "type": "Counting & Probability",
-#         "solution": "The spinner is guaranteed to land on exactly one of the three regions, so we know that the sum of the probabilities of it landing in each region will be 1. If we let the probability of it landing in region $C$ be $x$, we then have the equation $1 = \\frac{5}{12}+\\frac{1}{3}+x$, from which we have $x=\\boxed{\\frac{1}{4}}$.",
-#     }
-#
-#     # Generate CRVs
-#     crvs_file = "data/crvs.pt"
-#     # crvs = generate_crvs(model, tokenizer, crvs_file, model.device)
-#     # print(f"Generated {len(crvs)} CRVs")
-#     #
-#     # # Input query
-#     # query = "Solve the following problem: If x + y = 10 and x - y = 4, what are the values of x and y?"
-#     #
-#     # # Retrieve the best CRV
-#     # best_crv = retrieve_best_crv(query, crvs_file, model, tokenizer)
-#     #
-#     # # Set the CRV in the model (e.g., integrate at layer 5)
-#     # model.set_crv(best_crv, layer_idx=5)
-#     #
-#     # # Tokenize input
-#     # inputs = tokenizer(query, return_tensors="pt").to(model.device)
-#     #
-#     # # Generate response
-#     # outputs = model.generate(**inputs, max_length=200)
-#     #
-#     # # Decode and print the response
-#     # response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-#     # print(f"Query: {query}")
-#     # print(f"Response: {response}")
-
-
-import torch
-from transformers import AutoConfig, AutoTokenizer, TextStreamer
-
-from moc_layers import LlamaForCausalLM
 
 
 def load_custom_transformer(
@@ -420,7 +432,9 @@ def generate_crvs(
     set_seed(seed)
     if input == "dataset":
         # Create dataset and dataloader
-        dataset = MathDataset(tokenizer, split="train", subset_size=10)
+        # dataset = MathDataset(tokenizer, split="train", subset_size=SUBSET_SIZE)
+        dataset = GSM8KDataset(tokenizer, split="train", subset_size=SUBSET_SIZE)
+
         dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
         crvs = []
@@ -572,9 +586,8 @@ def main():
 
     # query = "Solve the following problem: If x + y = 10 and x - y = 4, what are the values of x and y?"
     query = (
-        "Sam is hired for a 20-day period. On days that he works, he earns $\$$60. For each day that he does not "
-        "work, $\$$30 is subtracted from his earnings. At the end of the 20-day period, he received $\$$660. "
-        "How many days did he not work?\nSolution:"
+        "Problem: Grant has four times as many vacations as Kelvin has classes. If Kelvin has 90 classes, "
+        "how many vacations and classes do Grant and Kelvin have altogether?"
     )
     # query = "Problem: Find the center of the circle with equation $x^2 - 6x + 5y = 11$. Solution:"
 
@@ -586,15 +599,19 @@ def main():
     )
     print("best_crv.shape: ", best_crv.shape)
     #
+    # reduced_crv = best_crv.mean(dim=-1)  # (layers/len(crv_layers), seq_len)
+    # print("Reduced CRV shape:", reduced_crv.shape)
+    # print("Reduced CRV:", str(reduced_crv[0]))
+
     # # Set the CRV in the model (e.g., integrate at layer 5)
-    model.model.set_crv(best_crv, layer_idx=10, crv_layers=crv_layers)
+    # model.model.set_crv(best_crv, layer_idx=10, crv_layers=crv_layers)
 
     generated_text = generate_text(
         model,
         tokenizer,
         prompt=query,
         # max_length=100,
-        max_new_tokens=256,
+        max_new_tokens=300,
         num_return_sequences=1,
         temperature=1.0,
         top_k=1,
@@ -605,6 +622,7 @@ def main():
         config=config,
         crv_layer_idx=[5, 10],
     )
+    print(generated_text)
 
 
 if __name__ == "__main__":

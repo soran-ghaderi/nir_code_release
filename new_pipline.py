@@ -1,6 +1,11 @@
 import logging
+import math
+import sys
 
 import torch
+from attr.validators import max_len
+from blib2to3.pgen2.driver import Optional
+from scipy.signal import max_len_seq
 from transformers import AutoTokenizer, AutoModel, LlamaConfig, AutoConfig, TextStreamer
 from datasets import load_dataset
 
@@ -24,8 +29,15 @@ CRV_SAVE_BATCH = 20
 
 
 class MathDataset(Dataset):
-    def __init__(self, tokenizer, split="train", max_length=MAX_LENGTH):
+    def __init__(
+        self, tokenizer, split="train", max_length=MAX_LENGTH, subset_size=None
+    ):
+
         self.dataset = load_dataset("hendrycks/competition_math", split=split)
+        if subset_size is not None:
+            self.dataset = self.dataset.select(
+                range(min(subset_size, len(self.dataset)))
+            )
         self.tokenizer = tokenizer
         self.max_length = max_length
         tokenizer.pad_token = tokenizer.eos_token
@@ -39,7 +51,14 @@ class MathDataset(Dataset):
             problem = item.get("problem", "")
             solution = item.get("solution", "")
             input_text = f"Problem: {problem}\nSolution: {solution}"
-            encoded = self.tokenizer.encode_plus(
+            # encoded = self.tokenizer.encode_plus(
+            #     input_text,
+            #     max_length=self.max_length,
+            #     padding="max_length",
+            #     truncation=True,
+            #     return_tensors="pt",
+            # )
+            encoded = self.tokenizer(
                 input_text,
                 max_length=self.max_length,
                 padding="max_length",
@@ -165,7 +184,9 @@ from transformers import AutoConfig, AutoTokenizer, TextStreamer
 from moc_layers import LlamaForCausalLM
 
 
-def load_custom_transformer(model_path, tokenizer_path, hf_token=None):
+def load_custom_transformer(
+    model_path, tokenizer_path, hf_token=None, load_in_8bit=False
+):
     # Load the tokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_auth_token=hf_token)
 
@@ -173,7 +194,8 @@ def load_custom_transformer(model_path, tokenizer_path, hf_token=None):
         model_path,
         use_auth_token=hf_token,
         device_map="auto",
-        # load_in_8bit=True,
+        # load_in_8bit=load_in_8bit,
+        torch_dtype=torch.float16,
     )
     model.eval()  # Set the model to evaluation mode
 
@@ -315,8 +337,9 @@ def generate_text(
     return decoded_text
 
 
-def generate_crvs(model, tokenizer, output_file, prompt=""):
-    # Load pre-trained model
+def generate_crvs(
+    model, tokenizer, output_file, crv_layers: Optional[tuple[int, list]] = None
+):  # crv_layers: layers to save their hidden states
 
     # model,
     # tokenizer,
@@ -335,52 +358,88 @@ def generate_crvs(model, tokenizer, output_file, prompt=""):
     # output_file = "results/concat_different_layers.csv",
 
     # Create dataset and dataloader
-    dataset = MathDataset(tokenizer, split="train")
+    dataset = MathDataset(tokenizer, split="train", subset_size=10)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    outputs = model(
-        **inputs,
-        output_hidden_states=True,
-        return_dict=True,
-    )
+    crvs = []
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(dataloader):
+            if batch_idx >= NUM_CONTEXTS // BATCH_SIZE:
+                break
 
-    # stacked_crv = torch.stack([output for output in outputs.hidden_states])
-    stacked_crv = torch.stack(
-        [output for output in outputs.hidden_states], dim=0
-    ).squeeze(1)
+            inputs = batch["input_ids"].to(model.device)
+            # attention_mask = batch["attention_mask"].to(model.device)
 
-    print("output h states", stacked_crv.shape, type(outputs.hidden_states[0]))
-    for i, o in enumerate(outputs.hidden_states):
-        print(i, o.shape)
+            # inputs2 = tokenizer(prompt, return_tensors="pt").to(model.device)
+            # generate embeds
+            # print("input types: ", type(inputs))
+            # print("input shape: ", inputs.shape)
+            outputs = model(
+                inputs,
+                output_hidden_states=True,
+                return_dict=True,
+            )
 
-    # crvs = []
-    # with torch.no_grad():
-    #     for batch_idx, batch in enumerate(dataloader):
-    #         if batch_idx >= NUM_CONTEXTS // BATCH_SIZE:
-    #             break
-    #
-    #         input_ids = batch["input_ids"].to(model.device)
-    #         attention_mask = batch["attention_mask"].to(model.device)
-    #
-    #         # Generate embeddings
-    #         outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-    #
-    #         # Use the last hidden state as the CRV
-    #         batch_crvs = outputs.hidden_states[-1].mean(dim=1)  # Average pooling
-    #         crvs.append(batch_crvs)
-    #
-    #         if (batch_idx + 1) % CRV_SAVE_BATCH == 0:
-    #             print(f"Processed {(batch_idx + 1) * BATCH_SIZE} contexts")
+            if crv_layers == None:
+                print(
+                    "outputs.hidden_states[crv_layers].shape: ",
+                    outputs.hidden_states[batch_idx].shape,
+                )
+                prompt_stacked_crv = (
+                    torch.stack([output for output in outputs.hidden_states], dim=0)
+                    .squeeze(1)
+                    .transpose(0, 1)
+                )  # (b, layers, seq_len, d_model)
+            elif isinstance(crv_layers, list):
+                # if more than one layer specified
+                prompt_stacked_crv = (
+                    torch.stack(
+                        [
+                            output
+                            for idx, output in enumerate(outputs.hidden_states)
+                            if idx in crv_layers
+                        ],
+                        dim=0,
+                    )
+                    .squeeze(1)
+                    .transpose(0, 1)
+                )  # (b, len(crv_layers), seq_len, d_model)
+            elif isinstance(crv_layers, int):
+                # if saving one layer
+                print(
+                    "int - outputs.hidden_states[crv_layers].shape: ",
+                    outputs.hidden_states[batch_idx].shape,
+                )
+                prompt_stacked_crv = outputs.hidden_states[crv_layers].squeeze(
+                    1
+                )  # (b, seq_len, d_model)
+
+            print("prompt_stacked_crv: ", prompt_stacked_crv.shape)
+            # Use the last hidden state as the CRV
+            # batch_crvs = outputs.hidden_states[-1].mean(dim=1)  # Average pooling
+            crvs.append(prompt_stacked_crv)
+
+            if (batch_idx + 1) % CRV_SAVE_BATCH == 0:
+                print(f"Processed {(batch_idx + 1) * BATCH_SIZE} contexts")
 
     # Stack all CRVs
-    # crvs_tensor = torch.cat(crvs, dim=0)
+    crvs_tensor = torch.cat(crvs, dim=0)
 
     # Save CRVs
-    # torch.save(crvs_tensor, output_file)
-    # print(f"CRVs saved to {output_file}")
+    torch.save(crvs_tensor, output_file)
+    print(f"CRVs saved to {output_file}")
 
-    # return crvs_tensor
+    return crvs_tensor
+
+
+def convert_size(size_bytes):
+    if size_bytes == 0:
+        return "0B"
+    size_name = ("B", "KB", "MB", "GB", "TB")
+    i = int(math.floor(math.log(size_bytes, 1024)))
+    p = math.pow(1024, i)
+    s = round(size_bytes / p, 2)
+    return f"{s} {size_name[i]}"
 
 
 def main():
@@ -392,12 +451,30 @@ def main():
         model_path, tokenizer_path, hf_token=hf_token
     )
 
+    crv_layers = [1, 10, 15, 20, 32]
+
     prompt = "elaborate more."
     print("model type: ", type(model))
     print("config.hidden_size: ", config.num_hidden_layers)
     print("config._attn_implementation: ", config._attn_implementation)
 
-    generate_crvs(model, tokenizer, "/", prompt=prompt)
+    crvs_file = generate_crvs(
+        model, tokenizer, "data/new_stack.pt", crv_layers=crv_layers
+    )  # shape: (subset_size, crv_layers, seq_len, d_model)
+
+    variable_size = sys.getsizeof(crvs_file)
+    print(
+        f"crvs_file size: {variable_size}, {convert_size(variable_size)}, {crvs_file.shape}"
+    )
+
+    # Input query
+    query = "Solve the following problem: If x + y = 10 and x - y = 4, what are the values of x and y?"
+
+    # Retrieve the best CRV
+    # best_crv = retrieve_best_crv(query, crvs_file, model, tokenizer)
+    #
+    # # Set the CRV in the model (e.g., integrate at layer 5)
+    # model.set_crv(best_crv, layer_idx=5)
 
     # generated_text = generate_text(
     #     model,

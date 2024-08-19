@@ -1,26 +1,20 @@
 import logging
-import math
-import sys
+import random
 
-import torch
-from attr.validators import max_len
+import numpy as np
+from torch.utils.data import Dataset, DataLoader, Subset
+import torch.nn.functional as F
 from blib2to3.pgen2.driver import Optional
-from scipy.signal import max_len_seq
 from transformers import AutoTokenizer, AutoModel, LlamaConfig, AutoConfig, TextStreamer
 from datasets import load_dataset
 
-from torch.utils.data import Dataset, DataLoader, Subset
-
 from main import write_results_to_file
-from moc_layers import LlamaSdpaAttention, LlamaForCausalLM
-
-from moc_layers import LlamaModel
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Constants
-MAX_LENGTH = 100
+MAX_LENGTH = 1024
 BATCH_SIZE = 4
 NUM_CONTEXTS = 20
 CRV_DIM = 4096  # Assuming LLaMA hidden size
@@ -28,9 +22,19 @@ SUBSET_SIZE = 20
 CRV_SAVE_BATCH = 20
 
 
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
 class MathDataset(Dataset):
     def __init__(
-        self, tokenizer, split="train", max_length=MAX_LENGTH, subset_size=None
+        self, tokenizer, split="train", max_length=MAX_LENGTH, subset_size=None, seed=42
     ):
 
         self.dataset = load_dataset("hendrycks/competition_math", split=split)
@@ -40,7 +44,8 @@ class MathDataset(Dataset):
             )
         self.tokenizer = tokenizer
         self.max_length = max_length
-        tokenizer.pad_token = tokenizer.eos_token
+        # tokenizer.pad_token = tokenizer.eos_token
+        set_seed(seed)
 
     def __len__(self):
         return len(self.dataset)
@@ -50,7 +55,10 @@ class MathDataset(Dataset):
             item = self.dataset[idx]
             problem = item.get("problem", "")
             solution = item.get("solution", "")
-            input_text = f"Problem: {problem}\nSolution: {solution}"
+            question_type = item.get("type", "")
+            input_text = (
+                f"Type: {question_type}\nProblem: {problem}\nSolution: {solution}"
+            )
             # encoded = self.tokenizer.encode_plus(
             #     input_text,
             #     max_length=self.max_length,
@@ -58,6 +66,7 @@ class MathDataset(Dataset):
             #     truncation=True,
             #     return_tensors="pt",
             # )
+            print(f"dataset input {idx}: ", len(input_text), input_text, "\n\n")
             encoded = self.tokenizer(
                 input_text,
                 max_length=self.max_length,
@@ -78,43 +87,7 @@ class MathDataset(Dataset):
             }
 
 
-# def generate_crvs(model, tokenizer, output_file, device):
-#     # Load pre-trained model
-#
-#     # Create dataset and dataloader
-#     dataset = MathDataset(tokenizer, split="train")
-#     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-#
-#     crvs = []
-#     with torch.no_grad():
-#         for batch_idx, batch in enumerate(dataloader):
-#             if batch_idx >= NUM_CONTEXTS // BATCH_SIZE:
-#                 break
-#
-#             input_ids = batch["input_ids"].to(device)
-#             attention_mask = batch["attention_mask"].to(device)
-#
-#             # Generate embeddings
-#             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-#
-#             # Use the last hidden state as the CRV
-#             batch_crvs = outputs.hidden_states[-1].mean(dim=1)  # Average pooling
-#             crvs.append(batch_crvs)
-#
-#             if (batch_idx + 1) % CRV_SAVE_BATCH == 0:
-#                 print(f"Processed {(batch_idx + 1) * BATCH_SIZE} contexts")
-#
-#     # Stack all CRVs
-#     crvs_tensor = torch.cat(crvs, dim=0)
-#
-#     # Save CRVs
-#     torch.save(crvs_tensor, output_file)
-#     print(f"CRVs saved to {output_file}")
-#
-#     return crvs_tensor
-
-
-def retrieve_best_crv(query, crvs_file, model, tokenizer, crv_layers):
+def retrieve_best_crv(query, crvs_file, model, tokenizer, crv_layers, seed=42):
     """
     other similarities to try: pη (z|x) ∝ exp(d(z)T q(x)) from Lewis, P. et al. (2020). Retrieval-augmented generation for knowledge-intensive
         nlp tasks. Advances in Neural Information Processing Systems, 33:9459–9474.
@@ -126,7 +99,7 @@ def retrieve_best_crv(query, crvs_file, model, tokenizer, crv_layers):
     :return:
     """
     # Load pre-trained model and tokenizer
-
+    set_seed(seed)
     # Load CRVs
     if isinstance(crvs_file, str):
         crvs = torch.load(crvs_file)
@@ -142,13 +115,71 @@ def retrieve_best_crv(query, crvs_file, model, tokenizer, crv_layers):
     )  # shape: (crv_layers, seq_len, d_model)
 
     print(f"query_crv shape: {query_crv.shape}")
+    print(f"crvs shape: {crvs.shape}")
 
-    crvs = crvs.to(query_crv.device)
+    # Extract last layer
+    query_crv_last = query_crv[0]  # shape: (seq_len, d_model)
+    crvs_last = crvs[:, 1, :, :]  # shape: (b, seq_len, d_model)
+
+    print(f"query_crv_last shape: {query_crv_last.shape}")
+    print(f"crvs_last shape: {crvs_last.shape}")
+
+    # Move tensors to the same device
+    crvs_last = crvs_last.to(query_crv_last.device)
+
+    # Flatten and normalize
+    query_crv_norm = F.normalize(query_crv_last.reshape(1, -1), p=2, dim=1)
+    crvs_norm = F.normalize(crvs_last.reshape(crvs_last.shape[0], -1), p=2, dim=1)
+
     # Compute similarities
-    similarities = torch.cosine_similarity(query_crv, crvs)
+    similarities = torch.mm(query_crv_norm, crvs_norm.t()).squeeze()
 
+    # Check for NaN or Inf
+    if torch.isnan(similarities).any() or torch.isinf(similarities).any():
+        print("Warning: NaN or Inf values in similarities")
+
+    # Print similarity statistics
+    print(f"Max similarity: {similarities.max().item()}")
+    print(f"Min similarity: {similarities.min().item()}")
+    print(f"Mean similarity: {similarities.mean().item()}")
+
+    # Get top-k indices
+    k = 5
+    best_indices = torch.topk(similarities, k).indices
+    print(f"Top {k} indices: {best_indices}")
+
+    best_crv_index = best_indices[0].item()
+    print(f"Best CRV index: {best_crv_index}")
+
+    # print(f"query_crv shape: {query_crv.shape}")
+    # print(f"crvs shape: {crvs.shape}")
+
+    # Extract last layer
+    # query_crv_last = query_crv[-1]  # shape: (seq_len, d_model)
+    # crvs_last = crvs[:, -1, :, :]  # shape: (b, seq_len, d_model)
+    #
+    # # crvs = crvs.to(query_crv.device)
+    # # Move tensors to the same device
+    # crvs_last = crvs_last.to(query_crv_last.device)
+    #
+    # query_crv_norm = F.normalize(query_crv_last.reshape(1, -1), p=2, dim=1)
+    # crvs_norm = F.normalize(crvs.reshape(crvs_last.shape[0], -1), p=2, dim=1)
+    # similarities = torch.mm(query_crv_norm, crvs_norm.t()).squeeze()
+
+    # Compute similarities
+    # similarities = torch.cosine_similarity(
+    #     query_crv.reshape(1, -1), crvs.reshape(crvs.shape[0], -1)
+    # )
+    # similarities = torch.cosine_similarity(
+    #     query_crv_last.unsqueeze(0), crvs_last, dim=-1
+    # )
+    # similarities = similarities.mean(dim=1)  # Average over sequence length
+    # print("similarities: ", similarities.shape)
     # Get the index of the most similar CRV
-    best_crv_index = similarities.argmax().item()
+    # best_crv_index = similarities.argmax().item()
+    best_crv_index = torch.argmax(similarities)
+    # best_crv_index1 = similarities1.argmax().item()
+
     print(f"best_crv_index: {best_crv_index}")
 
     return crvs[best_crv_index]
@@ -204,8 +235,9 @@ from moc_layers import LlamaForCausalLM
 
 
 def load_custom_transformer(
-    model_path, tokenizer_path, hf_token=None, load_in_8bit=False
+    model_path, tokenizer_path, hf_token=None, load_in_8bit=False, seed=42
 ):
+    set_seed(seed)
     # Load the tokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_auth_token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
@@ -290,6 +322,7 @@ def generate_text(
     config=None,
     crv_layer_idx=None,
     output_file="results/concat_different_layers.csv",
+    seed=42,
 ):
     """
 
@@ -310,7 +343,7 @@ def generate_text(
     :param output_file:
     :return:
     """
-
+    set_seed(seed)
     input_ids = tokenizer.encode(prompt, return_tensors="pt").to(model.device)
     streamer = TextStreamer(tokenizer, skip_special_tokens=True, skip_prompt=True)
     results = []
@@ -377,9 +410,14 @@ def generate_text(
 
 
 def generate_crvs(
-    model, tokenizer, input, output_file, crv_layers: Optional[tuple[int, list]] = None
+    model,
+    tokenizer,
+    input,
+    output_file,
+    crv_layers: Optional[tuple[int, list]] = None,
+    seed=42,
 ):  # crv_layers: layers to save their hidden states
-
+    set_seed(seed)
     if input == "dataset":
         # Create dataset and dataloader
         dataset = MathDataset(tokenizer, split="train", subset_size=10)
@@ -506,6 +544,8 @@ def generate_crvs(
 
 
 def main():
+    seed = 42
+    set_seed(seed)
     model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
     tokenizer_path = "meta-llama/Meta-Llama-3-8B-Instruct"
     hf_token = "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"
@@ -530,7 +570,13 @@ def main():
         crv_layers=crv_layers,
     )  # shape: (subset_size, crv_layers, seq_len, d_model)
 
-    query = "Solve the following problem: If x + y = 10 and x - y = 4, what are the values of x and y?"
+    # query = "Solve the following problem: If x + y = 10 and x - y = 4, what are the values of x and y?"
+    query = (
+        "Sam is hired for a 20-day period. On days that he works, he earns $\$$60. For each day that he does not "
+        "work, $\$$30 is subtracted from his earnings. At the end of the 20-day period, he received $\$$660. "
+        "How many days did he not work?\nSolution:"
+    )
+    # query = "Problem: Find the center of the circle with equation $x^2 - 6x + 5y = 11$. Solution:"
 
     # Input query
 
@@ -546,9 +592,9 @@ def main():
     generated_text = generate_text(
         model,
         tokenizer,
-        prompt=prompt,
+        prompt=query,
         # max_length=100,
-        max_new_tokens=50,
+        max_new_tokens=256,
         num_return_sequences=1,
         temperature=1.0,
         top_k=1,

@@ -3,12 +3,12 @@ import random
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, DataLoader
+import torch.nn as nn
 import torch.nn.functional as F
 from blib2to3.pgen2.driver import Optional
 from datasets import load_dataset
 from transformers import AutoConfig, AutoTokenizer, TextStreamer
-
 
 from moc_layers import LlamaForCausalLM
 
@@ -34,6 +34,109 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+
+
+class DNMemory(nn.Module):
+    def __init__(self, input_size, memory_size, word_size, num_reads, num_writes):
+        super(DNMemory, self).__init__()
+        self.input_size = input_size
+        self.memory_size = memory_size
+        self.word_size = word_size
+        self.num_reads = num_reads
+        self.num_writes = num_writes
+
+        # Initialize memory
+        self.memory = nn.Parameter(torch.zeros(memory_size, word_size))
+
+        # Read and write heads
+        self.read_heads = nn.ModuleList([ReadHead(word_size) for _ in range(num_reads)])
+        self.write_heads = nn.ModuleList(
+            [WriteHead(word_size) for _ in range(num_writes)]
+        )
+
+        # Controller
+        self.controller = nn.LSTM(input_size + num_reads * word_size, 256, num_layers=1)
+
+        # Output layer
+        self.output = nn.Linear(256 + num_reads * word_size, input_size)
+
+    def forward(self, x, prev_state=None):
+        batch_size = x.size(0)
+        if prev_state is None:
+            prev_state = self.init_state(batch_size)
+
+        controller_state, prev_reads = prev_state
+
+        # Read from memory
+        reads = [head(self.memory) for head in self.read_heads]
+        read_vectors = torch.cat(reads, dim=1)
+
+        # Controller input
+        controller_input = torch.cat([x, read_vectors], dim=1)
+        controller_output, controller_state = self.controller(
+            controller_input.unsqueeze(0), controller_state
+        )
+        controller_output = controller_output.squeeze(0)
+
+        # Write to memory
+        for head in self.write_heads:
+            self.memory = head(self.memory, controller_output)
+
+        # Output
+        output = self.output(torch.cat([controller_output, read_vectors], dim=1))
+
+        return output, (controller_state, reads)
+
+    def init_state(self, batch_size):
+        controller_state = (
+            torch.zeros(1, batch_size, 256),
+            torch.zeros(1, batch_size, 256),
+        )
+        reads = [torch.zeros(batch_size, self.word_size) for _ in range(self.num_reads)]
+        return (controller_state, reads)
+
+
+class ReadHead(nn.Module):
+    def __init__(self, word_size):
+        super(ReadHead, self).__init__()
+        self.word_size = word_size
+        self.attention = nn.Linear(word_size, 1)
+
+    def forward(self, memory):
+        attention = F.softmax(self.attention(memory), dim=0)
+        read_vector = torch.sum(attention * memory, dim=0)
+        return read_vector
+
+
+class WriteHead(nn.Module):
+    def __init__(self, word_size):
+        super(WriteHead, self).__init__()
+        self.word_size = word_size
+        self.erase_vector = nn.Linear(word_size, word_size)
+        self.write_vector = nn.Linear(word_size, word_size)
+        self.attention = nn.Linear(word_size, 1)
+
+    def forward(self, memory, controller_output):
+        attention = F.softmax(self.attention(memory), dim=0)
+        erase = torch.sigmoid(self.erase_vector(controller_output))
+        write = self.write_vector(controller_output)
+        memory = memory * (1 - attention * erase) + attention * write
+        return memory
+
+
+# Usage with CRVs
+class CRVMemoryManager:
+    def __init__(self, crv_size, memory_size=100, num_reads=4, num_writes=1):
+        self.dnc = DNMemory(crv_size, memory_size, crv_size, num_reads, num_writes)
+        self.state = None
+
+    def save_crv(self, crv):
+        output, self.state = self.dnc(crv, self.state)
+        return output
+
+    def retrieve_best_crv(self, query_crv):
+        output, self.state = self.dnc(query_crv, self.state)
+        return output
 
 
 class MathDataset(Dataset):
@@ -147,103 +250,77 @@ class GSM8KDataset(Dataset):
             }
 
 
-def retrieve_best_crv(query, crvs_file, model, tokenizer, crv_layers, seed=42):
-    """
-    other similarities to try: pη (z|x) ∝ exp(d(z)T q(x)) from Lewis, P. et al. (2020). Retrieval-augmented generation for knowledge-intensive
-        nlp tasks. Advances in Neural Information Processing Systems, 33:9459–9474.
-    :param query:
-    :param crvs_file:
-    :param model:
-    :param tokenizer:
-    :param crv_layers:
-    :return:
-    """
-    # Load pre-trained model and tokenizer
-    set_seed(seed)
-    # Load CRVs
-    if isinstance(crvs_file, str):
-        crvs = torch.load(crvs_file)
-    elif isinstance(crvs_file, torch.Tensor):
-        crvs = crvs_file  # (b, num_layers, seq_len, d_model)
+class CRVRetriever:
+    def __init__(self, model, tokenizer, crv_layers, seed=42):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.crv_layers = crv_layers
+        self.seed = seed
+        self.set_seed()
 
-    query_crv = generate_crvs(
-        model,
-        tokenizer,
-        input=query,
-        output_file="data/new_stack.pt",
-        crv_layers=crv_layers,
-    )  # shape: (crv_layers, seq_len, d_model)
+    def set_seed(self):
+        torch.manual_seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
 
-    print(f"query_crv shape: {query_crv.shape}")
-    print(f"crvs shape: {crvs.shape}")
+    def load_crvs(self, crvs_file):
+        if isinstance(crvs_file, str):
+            return torch.load(crvs_file)
+        elif isinstance(crvs_file, torch.Tensor):
+            return crvs_file
+        else:
+            raise ValueError(
+                "crvs_file must be either a string (file path) or a torch.Tensor"
+            )
 
-    # Extract last layer
-    query_crv_last = query_crv[0]  # shape: (seq_len, d_model)
-    crvs_last = crvs[:, 1, :, :]  # shape: (b, seq_len, d_model)
+    def generate_crvs(self, input, output_file="data/new_stack.pt"):
+        query_crv = generate_crvs(
+            self.model,
+            self.tokenizer,
+            input=input,
+            output_file="data/new_stack.pt",
+            crv_layers=None,
+        )  # shape: (crv_layers, seq_len, d_model)
+        return query_crv
 
-    print(f"query_crv_last shape: {query_crv_last.shape}")
-    print(f"crvs_last shape: {crvs_last.shape}")
+    def compute_similarities(self, query_crv, crvs):
+        query_crv_last = query_crv[0]  # shape: (seq_len, d_model)
+        crvs_last = crvs[:, 1, :, :]  # shape: (b, seq_len, d_model)
 
-    # Move tensors to the same device
-    crvs_last = crvs_last.to(query_crv_last.device)
+        crvs_last = crvs_last.to(query_crv_last.device)
 
-    # Flatten and normalize
-    query_crv_norm = F.normalize(query_crv_last.reshape(1, -1), p=2, dim=1)
-    crvs_norm = F.normalize(crvs_last.reshape(crvs_last.shape[0], -1), p=2, dim=1)
+        query_crv_norm = F.normalize(query_crv_last.reshape(1, -1), p=2, dim=1)
+        crvs_norm = F.normalize(crvs_last.reshape(crvs_last.shape[0], -1), p=2, dim=1)
 
-    # Compute similarities
-    # similarities = torch.mm(query_crv_norm, crvs_norm.t()).squeeze()
-    similarities = torch.cosine_similarity(query_crv_norm, crvs_norm, -1)
+        return torch.cosine_similarity(query_crv_norm, crvs_norm, -1)
 
-    # Check for NaN or Inf
-    if torch.isnan(similarities).any() or torch.isinf(similarities).any():
-        print("Warning: NaN or Inf values in similarities")
+    def get_top_k_indices(self, similarities, k=5):
+        return torch.topk(similarities, k).indices
 
-    # Print similarity statistics
-    print(f"Max similarity: {similarities.max().item()}")
-    print(f"Min similarity: {similarities.min().item()}")
-    print(f"Mean similarity: {similarities.mean().item()}")
+    def retrieve_best_crv(self, query, crvs_file):
+        crvs = self.load_crvs(crvs_file)
 
-    # Get top-k indices
-    k = 5
-    best_indices = torch.topk(similarities, k).indices
-    print(f"Top {k} indices: {best_indices}")
+        query_crv = self.generate_crvs(input=query, output_file="data/new_stack.pt")
 
-    best_crv_index = best_indices[0].item()
-    print(f"Best CRV index: {best_crv_index}")
+        similarities = self.compute_similarities(query_crv, crvs)
 
-    # print(f"query_crv shape: {query_crv.shape}")
-    # print(f"crvs shape: {crvs.shape}")
+        if torch.isnan(similarities).any() or torch.isinf(similarities).any():
+            print("Warning: NaN or Inf values in similarities")
 
-    # Extract last layer
-    # query_crv_last = query_crv[-1]  # shape: (seq_len, d_model)
-    # crvs_last = crvs[:, -1, :, :]  # shape: (b, seq_len, d_model)
-    #
-    # # crvs = crvs.to(query_crv.device)
-    # # Move tensors to the same device
-    # crvs_last = crvs_last.to(query_crv_last.device)
-    #
-    # query_crv_norm = F.normalize(query_crv_last.reshape(1, -1), p=2, dim=1)
-    # crvs_norm = F.normalize(crvs.reshape(crvs_last.shape[0], -1), p=2, dim=1)
-    # similarities = torch.mm(query_crv_norm, crvs_norm.t()).squeeze()
+        print(f"Max similarity: {similarities.max().item()}")
+        print(f"Min similarity: {similarities.min().item()}")
+        print(f"Mean similarity: {similarities.mean().item()}")
 
-    # Compute similarities
-    # similarities = torch.cosine_similarity(
-    #     query_crv.reshape(1, -1), crvs.reshape(crvs.shape[0], -1)
-    # )
-    # similarities = torch.cosine_similarity(
-    #     query_crv_last.unsqueeze(0), crvs_last, dim=-1
-    # )
-    # similarities = similarities.mean(dim=1)  # Average over sequence length
-    # print("similarities: ", similarities.shape)
-    # Get the index of the most similar CRV
-    # best_crv_index = similarities.argmax().item()
-    best_crv_index = torch.argmax(similarities)
-    # best_crv_index1 = similarities1.argmax().item()
+        best_indices = self.get_top_k_indices(similarities)
+        print(f"Top 5 indices: {best_indices}")
 
-    print(f"best_crv_index: {best_crv_index}")
+        best_crv_index = best_indices[0].item()
+        print(f"Best CRV index: {best_crv_index}")
 
-    return crvs[best_crv_index]
+        return crvs[best_crv_index]
+
+    def __call__(self, query, crvs_file):
+        return self.retrieve_best_crv(query, crvs_file)
 
 
 def load_custom_transformer(
@@ -560,8 +637,14 @@ def generate_crvs(
 def main():
     seed = 42
     set_seed(seed)
-    model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
-    tokenizer_path = "meta-llama/Meta-Llama-3-8B-Instruct"
+    model_urls = {
+        "llama31": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        "llama3": "meta-llama/Meta-Llama-3-8B-Instruct",
+    }
+    model_path = model_urls["llama31"]
+    tokenizer_path = model_path
+    # tokenizer_path = "meta-llama/Meta-Llama-3-8B-Instruct"
+    # model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
     hf_token = "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"
     config = AutoConfig.from_pretrained(model_path, use_auth_token=hf_token)
     model, tokenizer = load_custom_transformer(
@@ -589,14 +672,21 @@ def main():
         "Problem: Grant has four times as many vacations as Kelvin has classes. If Kelvin has 90 classes, "
         "how many vacations and classes do Grant and Kelvin have altogether?"
     )
+    query = (
+        "Aaron pays his actuary membership fees each year. The membership fee increases yearly by $10. If he "
+        "pays $80 in the first year, how much does his membership cost, in dollars, in the sixth year?"
+    )
     # query = "Problem: Find the center of the circle with equation $x^2 - 6x + 5y = 11$. Solution:"
 
     # Input query
 
     # Retrieve the best CRV
-    best_crv = retrieve_best_crv(
-        query, crvs_file, model, tokenizer, crv_layers=crv_layers
-    )
+    # best_crv = retrieve_best_crv(
+    #     query, crvs_file, model, tokenizer, crv_layers=crv_layers
+    # )
+
+    retriever = CRVRetriever(model, tokenizer, crv_layers)
+    best_crv = retriever(query, crvs_file)
     print("best_crv.shape: ", best_crv.shape)
     #
     # reduced_crv = best_crv.mean(dim=-1)  # (layers/len(crv_layers), seq_len)
@@ -604,7 +694,7 @@ def main():
     # print("Reduced CRV:", str(reduced_crv[0]))
 
     # # Set the CRV in the model (e.g., integrate at layer 5)
-    # model.model.set_crv(best_crv, layer_idx=10, crv_layers=crv_layers)
+    model.model.set_crv(best_crv, layer_idx=1, crv_layers=crv_layers)
 
     generated_text = generate_text(
         model,

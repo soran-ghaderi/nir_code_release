@@ -1,3 +1,5 @@
+from typing import Union, List
+
 import torch
 from torch.utils.data import DataLoader
 import torch.nn as nn
@@ -5,6 +7,7 @@ import torch.nn.functional as F
 from blib2to3.pgen2.driver import Optional
 from transformers import AutoConfig, AutoTokenizer, TextStreamer
 
+from configs import MAX_LENGTH, BATCH_SIZE, NUM_CONTEXTS, SUBSET_SIZE, CRV_SAVE_BATCH
 from data_processor.data_loader import GSM8KDataset
 from moc_layers import LlamaForCausalLM
 
@@ -13,12 +16,6 @@ from utils import set_seed, logger
 
 logger = logger()
 # Constants
-MAX_LENGTH = 128
-BATCH_SIZE = 4
-NUM_CONTEXTS = 20
-CRV_DIM = 4096  # Assuming LLaMA hidden size
-SUBSET_SIZE = 20
-CRV_SAVE_BATCH = 20
 
 
 class DNMemory(nn.Module):
@@ -508,6 +505,120 @@ def generate_crvs(
     return crvs_tensor
 
 
+class CRVGenerator:
+    def __init__(self, model, tokenizer, seed=42):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.seed = seed
+        self.logger = logger
+
+    @staticmethod
+    def set_seed(seed):
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+    def generate_crvs(
+        self,
+        input: Union[str, str],
+        output_file: str,
+        crv_layers: Optional[Union[int, List[int]]] = None,
+        batch_size: int = 32,
+        num_contexts: int = 1000,
+        subset_size: int = SUBSET_SIZE,
+        max_length: int = 512,
+        crv_save_batch: int = 10,
+    ) -> torch.Tensor:
+        self.set_seed(self.seed)
+
+        if input == "dataset":
+            return self._generate_crvs_from_dataset(
+                output_file,
+                crv_layers,
+                batch_size,
+                num_contexts,
+                subset_size,
+                crv_save_batch,
+            )
+        elif isinstance(input, str):
+            return self._generate_crvs_from_query(
+                input, output_file, crv_layers, max_length
+            )
+        else:
+            raise ValueError("Input must be either 'dataset' or a query string")
+
+    def _generate_crvs_from_dataset(
+        self,
+        output_file,
+        crv_layers,
+        batch_size,
+        num_contexts,
+        subset_size,
+        crv_save_batch,
+    ):
+        dataset = GSM8KDataset(self.tokenizer, split="train", subset_size=subset_size)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+        crvs = []
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(dataloader):
+                if batch_idx >= num_contexts // batch_size:
+                    break
+
+                inputs = batch["input_ids"].to(self.model.device)
+                outputs = self.model(
+                    inputs, output_hidden_states=True, return_dict=True
+                )
+
+                prompt_stacked_crv = self._process_hidden_states(
+                    outputs.hidden_states, crv_layers
+                )
+                crvs.append(prompt_stacked_crv)
+
+                if (batch_idx + 1) % crv_save_batch == 0:
+                    self.logger.info(
+                        f"Processed {(batch_idx + 1) * batch_size} contexts"
+                    )
+
+        crvs_tensor = torch.cat(crvs, dim=0)
+        torch.save(crvs_tensor, output_file)
+        self.logger.info(f"CRVs saved to {output_file}")
+        return crvs_tensor
+
+    def _generate_crvs_from_query(self, input, output_file, crv_layers, max_length):
+        self.logger.info("The input received is a query")
+        with torch.no_grad():
+            inputs = self.tokenizer(
+                input,
+                max_length=max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            )
+            inputs = inputs["input_ids"].to(self.model.device)
+            outputs = self.model(inputs, output_hidden_states=True, return_dict=True)
+
+            prompt_stacked_crv = self._process_hidden_states(
+                outputs.hidden_states, crv_layers
+            )
+
+        return prompt_stacked_crv
+
+    def _process_hidden_states(self, hidden_states, crv_layers):
+        if crv_layers is None:
+            return torch.stack(hidden_states, dim=0).squeeze(1)
+        elif isinstance(crv_layers, list):
+            return torch.stack(
+                [hidden_states[idx] for idx in crv_layers], dim=0
+            ).squeeze(1)
+        elif isinstance(crv_layers, int):
+            return hidden_states[crv_layers].squeeze(1)
+        else:
+            raise ValueError(
+                "crv_layers must be None, a list of integers, or an integer"
+            )
+
+
 def main():
     seed = 42
     set_seed(seed)
@@ -533,13 +644,18 @@ def main():
     print("config.hidden_size: ", config.num_hidden_layers)
     print("config._attn_implementation: ", config._attn_implementation)
 
-    crvs_file = generate_crvs(
-        model,
-        tokenizer,
-        input="dataset",
-        output_file="data/new_stack.pt",
-        crv_layers=crv_layers,
-    )  # shape: (subset_size, crv_layers, seq_len, d_model)
+    crv_generator = CRVGenerator(model, tokenizer)
+    crvs_file = crv_generator.generate_crvs(
+        "dataset", "data/new_stack.pt", crv_layers=crv_layers
+    )
+
+    # crvs_file = generate_crvs(
+    #     model,
+    #     tokenizer,
+    #     input="dataset",
+    #     output_file="data/new_stack.pt",
+    #     crv_layers=crv_layers,
+    # )  # shape: (subset_size, crv_layers, seq_len, d_model)
 
     # query = "Solve the following problem: If x + y = 10 and x - y = 4, what are the values of x and y?"
     query = (

@@ -4,18 +4,21 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import Dataset
 
-# from new_pipline import MAX_LENGTH, SUBSET_SIZE
-from utils import set_seed, logger
+from configs import MAX_LENGTH, SUBSET_SIZE
 
-MAX_LENGTH = 128
-SUBSET_SIZE = 20
+from utils import set_seed, logger
 
 logger = logger()
 
 
 class MathDataset(Dataset):
     def __init__(
-        self, tokenizer, split="train", max_length=MAX_LENGTH, subset_size=None, seed=42
+        self,
+        tokenizer,
+        split="train",
+        max_length=MAX_LENGTH,
+        subset_size=SUBSET_SIZE,
+        seed=42,
     ):
 
         self.dataset = load_dataset("hendrycks/competition_math", split=split)

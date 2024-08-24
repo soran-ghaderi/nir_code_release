@@ -1,6 +1,9 @@
 import torch
 from torch.nn import functional as F
 
+from utils import set_seed
+
+
 # from new_pipline import set_seed, generate_crvs
 
 

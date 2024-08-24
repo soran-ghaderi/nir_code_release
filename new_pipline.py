@@ -1,5 +1,3 @@
-from typing import Union, List
-
 import torch
 from torch.utils.data import DataLoader
 import torch.nn as nn
@@ -9,9 +7,11 @@ from transformers import AutoConfig, AutoTokenizer, TextStreamer
 
 from configs import MAX_LENGTH, BATCH_SIZE, NUM_CONTEXTS, SUBSET_SIZE, CRV_SAVE_BATCH
 from data_processor.data_loader import GSM8KDataset
+from generator.crv_generator import CRVGenerator
 from moc_layers import LlamaForCausalLM
 
 from main import write_results_to_file
+from retrieve.cosine_similarity import CRVRetriever
 from utils import set_seed, logger
 
 logger = logger()
@@ -119,82 +119,6 @@ class CRVMemoryManager:
     def retrieve_best_crv(self, query_crv):
         output, self.state = self.dnc(query_crv, self.state)
         return output
-
-
-class CRVRetriever:
-    def __init__(self, model, tokenizer, crv_layers, seed=42, max_length=512):
-        self.model = model
-        self.tokenizer = tokenizer
-        self.crv_layers = crv_layers
-        self.seed = seed
-        self.set_seed()
-        self.max_length = max_length
-        self.crv_generator = CRVGenerator(model, tokenizer, max_length=max_length)
-        self.input_crv = self.crv_generator.generate_crvs(
-            "dataset", crv_layers=crv_layers
-        )
-
-    def set_seed(self):
-        torch.manual_seed(self.seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(self.seed)
-
-    def load_crvs(self, crvs_file):
-        if isinstance(crvs_file, str):
-            return torch.load(crvs_file)
-        elif isinstance(crvs_file, torch.Tensor):
-            return crvs_file
-        else:
-            raise ValueError(
-                "crvs_file must be either a string (file path) or a torch.Tensor"
-            )
-
-    def generate_crvs(self, input, output_file="data/new_stack.pt"):
-
-        query_crv = self.crv_generator.generate_crvs(
-            input, crv_layers=self.crv_layers
-        )  # shape: (crv_layers, seq_len, d_model)
-
-        return query_crv
-
-    def compute_similarities(self, query_crv, crvs):
-        query_crv_last = query_crv[0]  # shape: (seq_len, d_model)
-        crvs_last = crvs[:, 1, :, :]  # shape: (b, seq_len, d_model)
-
-        crvs_last = crvs_last.to(query_crv_last.device)
-
-        query_crv_norm = F.normalize(query_crv_last.reshape(1, -1), p=2, dim=1)
-        crvs_norm = F.normalize(crvs_last.reshape(crvs_last.shape[0], -1), p=2, dim=1)
-
-        return torch.cosine_similarity(query_crv_norm, crvs_norm, -1)
-
-    def get_top_k_indices(self, similarities, k=5):
-        return torch.topk(similarities, k).indices
-
-    def retrieve_best_crv(self, query, crvs_file):
-        crvs = self.load_crvs(crvs_file)
-
-        query_crv = self.generate_crvs(input=query, output_file="data/new_stack.pt")
-
-        similarities = self.compute_similarities(query_crv, crvs)
-
-        if torch.isnan(similarities).any() or torch.isinf(similarities).any():
-            print("Warning: NaN or Inf values in similarities")
-
-        print(f"Max similarity: {similarities.max().item()}")
-        print(f"Min similarity: {similarities.min().item()}")
-        print(f"Mean similarity: {similarities.mean().item()}")
-
-        best_indices = self.get_top_k_indices(similarities)
-        print(f"Top 5 indices: {best_indices}")
-
-        best_crv_index = best_indices[0].item()
-        print(f"Best CRV index: {best_crv_index}")
-
-        return crvs[best_crv_index]
-
-    def __call__(self, query, crvs_file):
-        return self.retrieve_best_crv(query, crvs_file)
 
 
 def load_custom_transformer(
@@ -506,185 +430,6 @@ def generate_crvs(
         crvs_tensor = prompt_stacked_crv
 
     return crvs_tensor
-
-
-class CRVGenerator:
-    def __init__(self, model, tokenizer, max_length=512, seed=42):
-        self.model = model
-        self.tokenizer = tokenizer
-        self.seed = seed
-        self.logger = logger
-        self.max_length = max_length
-
-    @staticmethod
-    def set_seed(seed):
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-
-    def generate_crvs(
-        self,
-        input: Union[str, str],
-        output_file: str = "data/new_stack.pt",
-        crv_layers: Optional[Union[int, List[int]]] = None,
-        batch_size: int = 32,
-        num_contexts: int = 1000,
-        subset_size: int = SUBSET_SIZE,
-        crv_save_batch: int = 10,
-    ) -> torch.Tensor:
-        self.set_seed(self.seed)
-
-        if input == "dataset":
-            return self._generate_crvs_from_dataset(
-                output_file,
-                crv_layers,
-                batch_size,
-                num_contexts,
-                subset_size,
-                crv_save_batch,
-            )
-        elif isinstance(input, str):
-            return self._generate_crvs_from_query(input, output_file, crv_layers)
-        else:
-            raise ValueError("Input must be either 'dataset' or a query string")
-
-    def _generate_crvs_from_dataset(
-        self,
-        output_file,
-        crv_layers,
-        batch_size,
-        num_contexts,
-        subset_size,
-        crv_save_batch,
-    ):
-        dataset = GSM8KDataset(self.tokenizer, split="train", subset_size=subset_size)
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-        crvs = []
-        with torch.no_grad():
-            for batch_idx, batch in enumerate(dataloader):
-                if batch_idx >= num_contexts // batch_size:
-                    break
-
-                inputs = batch["input_ids"].to(self.model.device)
-                outputs = self.model(
-                    inputs, output_hidden_states=True, return_dict=True
-                )
-
-                prompt_stacked_crv = self._process_hidden_states(
-                    outputs.hidden_states, crv_layers
-                )
-                crvs.append(prompt_stacked_crv)
-
-                if (batch_idx + 1) % crv_save_batch == 0:
-                    self.logger.info(
-                        f"Processed {(batch_idx + 1) * batch_size} contexts"
-                    )
-
-        crvs_tensor = torch.cat(crvs, dim=0)
-        torch.save(crvs_tensor, output_file)
-        self.logger.info(f"CRVs saved to {output_file}")
-        return crvs_tensor
-
-    def _generate_crvs_from_query(self, input, output_file, crv_layers):
-        self.logger.info("The input received is a query")
-        with torch.no_grad():
-            inputs = self.tokenizer(
-                input,
-                max_length=self.max_length,
-                padding="max_length",
-                truncation=True,
-                return_tensors="pt",
-            )
-            inputs = inputs["input_ids"].to(self.model.device)
-            outputs = self.model(inputs, output_hidden_states=True, return_dict=True)
-
-            prompt_stacked_crv = self._process_hidden_states(
-                outputs.hidden_states, crv_layers
-            )
-
-        # elif isinstance(input, str):
-        # logger.info("The input received is a query")
-        # with torch.no_grad():
-        #     # inputs = tokenizer(input, return_tensors="pt").to(model.device)
-        #     inputs = tokenizer(
-        #         input,
-        #         max_length=MAX_LENGTH,
-        #         padding="max_length",
-        #         truncation=True,
-        #         return_tensors="pt",
-        #     )
-        #     inputs = inputs["input_ids"]
-        #     # generate embeds
-        #     outputs = model(
-        #         inputs,
-        #         output_hidden_states=True,
-        #         return_dict=True,
-        #     )
-        #
-        #     if crv_layers == None:
-        #         print(
-        #             "outputs.hidden_states[crv_layers].shape: ",
-        #             # outputs.hidden_states[batch_idx].shape,
-        #         )
-        #         prompt_stacked_crv = torch.stack(
-        #             [output for output in outputs.hidden_states], dim=0
-        #         ).squeeze(
-        #             1
-        #         )  # (layers, seq_len, d_model)
-        #     elif isinstance(crv_layers, list):
-        #         # if more than one layer specified
-        #         prompt_stacked_crv = torch.stack(
-        #             [
-        #                 output
-        #                 for idx, output in enumerate(outputs.hidden_states)
-        #                 if idx in crv_layers
-        #             ],
-        #             dim=0,
-        #         ).squeeze(
-        #             1
-        #         )  # (len(crv_layers), seq_len, d_model)
-        #     elif isinstance(crv_layers, int):
-        #         # if saving one layer
-        #         prompt_stacked_crv = outputs.hidden_states[crv_layers].squeeze(
-        #             1
-        #         )  # (1, seq_len, d_model), the 1 is the len(crv_layers)
-        #     print("prompt_stacked_crv: ", prompt_stacked_crv.shape)
-        #
-        # crvs_tensor = prompt_stacked_crv
-
-        return prompt_stacked_crv
-
-    def _process_hidden_states(self, hidden_states, crv_layers):
-        if crv_layers is None:
-            prompt_stacked_crv = torch.stack(
-                [layer for layer in hidden_states], dim=0
-            ).squeeze(
-                1
-            )  # (layers, seq_len, d_model)
-            return prompt_stacked_crv
-            # return torch.stack(hidden_states, dim=0).squeeze(1)
-        elif isinstance(crv_layers, list):
-            prompt_stacked_crv = torch.stack(
-                [layer for idx, layer in enumerate(hidden_states) if idx in crv_layers],
-                dim=0,
-            ).squeeze(
-                1
-            )  # (len(crv_layers), seq_len, d_model)
-            return prompt_stacked_crv
-            # return torch.stack(
-            #     [hidden_states[idx] for idx in crv_layers], dim=0
-            # ).squeeze(1)
-        elif isinstance(crv_layers, int):
-            prompt_stacked_crv = hidden_states[crv_layers].squeeze(
-                1
-            )  # (1, seq_len, d_model), the 1 is the len(crv_layers)
-            return prompt_stacked_crv
-            # return hidden_states[crv_layers].squeeze(1)
-        else:
-            raise ValueError(
-                "crv_layers must be None, a list of integers, or an integer"
-            )
 
 
 def main():

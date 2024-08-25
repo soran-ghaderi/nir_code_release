@@ -1,16 +1,15 @@
+import csv
+from typing import Union
+
 import torch
-from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch.nn.functional as F
 from blib2to3.pgen2.driver import Optional
 from transformers import AutoConfig, AutoTokenizer, TextStreamer
-
-from configs import MAX_LENGTH, BATCH_SIZE, NUM_CONTEXTS, SUBSET_SIZE, CRV_SAVE_BATCH
-from data_processor.data_loader import GSM8KDataset
+import configs
 from generator.crv_generator import CRVGenerator
 from moc_layers import LlamaForCausalLM
 
-from main import write_results_to_file
 from retrieve.cosine_similarity import CRVRetriever
 from utils import set_seed, logger
 
@@ -141,295 +140,99 @@ def load_custom_transformer(
     return model, tokenizer
 
 
-def write_results_to_file(
-    file_path,
-    results,
-    prompt,
-    max_length=50,
-    max_new_tokens=100,
-    num_return_sequences=1,
-    temperature=0.8,
-    top_k=50,
-    top_p=0.95,
-    repetition_penalty=1.2,
-    no_repeat_ngram_size=1,
-):
-    """
-    Writes the results to a file in an organized and tabular format.
-
-    Args:
-        file_path (str): The path to the output file.
-        results (list): A list of dictionaries containing the results.
-    """
-    context = (
-        "The Apollo 11 mission was the first manned mission to land on the Moon. Launched by NASA on July 16, "
-        "1969, it carried astronauts Neil Armstrong, Buzz Aldrin, and Michael Collins. On July 20, 1969, Neil "
-        "Armstrong and Buzz Aldrin landed the lunar module Eagle on the Moon while Michael Collins remained in "
-        "lunar orbit in the command module Columbia. Armstrong became the first person to step onto the lunar "
-        "surface, followed by Aldrin. They spent about two and a quarter hours outside the spacecraft, "
-        "collecting samples and conducting experiments. The mission returned to Earth on July 24, 1969."
-    )
-
-    with open(file_path, mode="w", newline="", encoding="utf-8") as file:
-        file.write(f"Prompt: {prompt}\n")
-        file.write(f"Context: {context}\n\n")
-        file.write(f"Model Parameters\n")
-        file.write(f"Max Length: {max_length}\n")
-        file.write(f"Max New Tokens: {max_new_tokens}\n")
-        file.write(f"Num Return Sequences: {num_return_sequences}\n")
-        file.write(f"Temperature: {temperature}\n")
-        file.write(f"Top K: {top_k}\n")
-        file.write(f"Top P: {top_p}\n")
-        file.write(f"Repetition Penalty: {repetition_penalty}\n")
-        file.write(f"No Repeat N-gram Size: {no_repeat_ngram_size}\n\n\n")
-        file.write(f"Generated text by concatenated layer index\n\n")
-
-        # writer.writerow(result)
-        # for key, value in results.items():
-        file.write(f"{results}\n")
-
-        file.write(f"\n{'==' * 80}\n")
-
-    print(f"Results written to {file_path}")
-
-
-def generate_text(
-    model,
-    tokenizer,
-    prompt,
-    max_length=50,
-    max_new_tokens=100,
-    num_return_sequences=1,
-    temperature=0.8,
-    top_k=50,
-    top_p=0.95,
-    repetition_penalty=1.2,
-    no_repeat_ngram_size=1,
-    cross_attend=False,
-    config=None,
-    crv_layer_idx=None,
-    output_file="results/concat_different_layers.csv",
-    seed=42,
-):
-    """
-
-    :param model:
-    :param tokenizer:
-    :param prompt:
-    :param max_length:
-    :param max_new_tokens:
-    :param num_return_sequences:
-    :param temperature:
-    :param top_k:
-    :param top_p:
-    :param repetition_penalty:
-    :param no_repeat_ngram_size:
-    :param cross_attend:
-    :param config:
-    :param crv_layer_idx:
-    :param output_file:
-    :return:
-    """
-    set_seed(seed)
-    input_ids = tokenizer.encode(prompt, return_tensors="pt").to(model.device)
-    streamer = TextStreamer(tokenizer, skip_special_tokens=True, skip_prompt=True)
-    results = []
-
-    # Generate text using the model
-    if not crv_layer_idx == None:
-        print(f"concatenate at layer {crv_layer_idx}:")
-
-        # model.model.set_layers_to_concat(layer_idx=crv_layer_idx)
-        # model.model.set_is_crv_concatenated(is_crv_concatenated=False)
-
-        with torch.no_grad():
-            outputs = model.generate(
-                input_ids,
-                max_length=max_length,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                do_sample=True,
-                num_return_sequences=num_return_sequences,
-                repetition_penalty=repetition_penalty,
-                no_repeat_ngram_size=no_repeat_ngram_size,
-                streamer=streamer,
-            )
-
-        generated_text = outputs[0][input_ids.shape[-1] :]
-        decoded_text = tokenizer.decode(generated_text, skip_special_tokens=True)
-
-        results = decoded_text
-        write_results_to_file(
-            output_file,
-            results,
-            prompt,
-            max_length=max_length,
-            max_new_tokens=max_new_tokens,
-            num_return_sequences=num_return_sequences,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
-            no_repeat_ngram_size=no_repeat_ngram_size,
+class TextGenerator:
+    def __init__(self, model, tokenizer, seed=42):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.seed = seed
+        self.streamer = TextStreamer(
+            tokenizer, skip_special_tokens=True, skip_prompt=True
         )
-    else:
+
+    @staticmethod
+    def set_seed(seed):
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+    def generate_text(
+        self,
+        prompt: str,
+        max_length: int = 50,
+        max_new_tokens: int = 100,
+        num_return_sequences: int = 1,
+        temperature: float = 0.8,
+        top_k: int = 50,
+        top_p: float = 0.95,
+        repetition_penalty: float = 1.2,
+        no_repeat_ngram_size: int = 1,
+        crv_layer_idx: Optional[int] = None,
+        output_file: Optional[str] = None,
+    ) -> Union[str, list]:
+        """
+        Generate text based on the given prompt and parameters.
+
+        :param prompt: The input prompt for text generation
+        :param max_length: Maximum length of the generated text
+        :param max_new_tokens: Maximum number of new tokens to generate
+        :param num_return_sequences: Number of alternative sequences to generate
+        :param temperature: Temperature for controlling randomness in generation
+        :param top_k: Number of highest probability vocabulary tokens to keep for top-k-filtering
+        :param top_p: Cumulative probability for top-p-filtering
+        :param repetition_penalty: Penalty for repeating tokens
+        :param no_repeat_ngram_size: Size of n-grams to avoid repeating
+        :param crv_layer_idx: Index of the layer to concatenate for CRV (if applicable)
+        :param output_file: File to write results (if provided)
+        :return: Generated text or list of generated texts
+        """
+        self.set_seed(self.seed)
+        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(
+            self.model.device
+        )
+
+        generate_kwargs = {
+            "input_ids": input_ids,
+            "max_length": max_length,
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature,
+            "top_k": top_k,
+            "top_p": top_p,
+            "do_sample": True,
+            "num_return_sequences": num_return_sequences,
+            "repetition_penalty": repetition_penalty,
+            "no_repeat_ngram_size": no_repeat_ngram_size,
+            "streamer": self.streamer,
+        }
+
+        if crv_layer_idx is not None:
+            print(f"Concatenate at layer {crv_layer_idx}:")
+            # Uncomment these lines if you need to set CRV concatenation
+            # self.model.model.set_layers_to_concat(layer_idx=crv_layer_idx)
+            # self.model.model.set_is_crv_concatenated(is_crv_concatenated=False)
+
         with torch.no_grad():
-            outputs = model.generate(
-                input_ids,
-                max_length=max_length,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                do_sample=True,
-                num_return_sequences=num_return_sequences,
-                repetition_penalty=repetition_penalty,
-                no_repeat_ngram_size=no_repeat_ngram_size,
-                streamer=streamer,
+            outputs = self.model.generate(**generate_kwargs)
+
+        generated_texts = [
+            self.tokenizer.decode(
+                output[input_ids.shape[-1] :], skip_special_tokens=True
+            )
+            for output in outputs
+        ]
+
+        if output_file:
+            self._write_results_to_file(
+                output_file, generated_texts, prompt, **generate_kwargs
             )
 
-        generated_text = outputs[0][input_ids.shape[-1] :]
-        decoded_text = tokenizer.decode(generated_text, skip_special_tokens=True)
+        return generated_texts[0] if len(generated_texts) == 1 else generated_texts
 
-    return decoded_text
-
-
-def generate_crvs(
-    model,
-    tokenizer,
-    input,
-    output_file,
-    crv_layers: Optional[tuple[int, list]] = None,
-    seed=42,
-):  # crv_layers: layers to save their hidden states
-    set_seed(seed)
-    if input == "dataset":
-        # Create dataset and dataloader
-        # dataset = MathDataset(tokenizer, split="train", subset_size=SUBSET_SIZE)
-        dataset = GSM8KDataset(tokenizer, split="train", subset_size=SUBSET_SIZE)
-
-        dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-
-        crvs = []
-        with torch.no_grad():
-            for batch_idx, batch in enumerate(dataloader):
-                if batch_idx >= NUM_CONTEXTS // BATCH_SIZE:
-                    break
-
-                inputs = batch["input_ids"].to(model.device)
-                # attention_mask = batch["attention_mask"].to(model.device)
-
-                # generate embeds
-                # print("input types: ", type(inputs))
-                # print("input shape: ", inputs.shape)
-                outputs = model(
-                    inputs,
-                    output_hidden_states=True,
-                    return_dict=True,
-                )
-
-                if crv_layers == None:
-                    print(
-                        "outputs.hidden_states[crv_layers].shape: ",
-                        outputs.hidden_states[batch_idx].shape,
-                    )
-                    prompt_stacked_crv = (
-                        torch.stack([output for output in outputs.hidden_states], dim=0)
-                        .squeeze(1)
-                        .transpose(0, 1)
-                    )  # (b, layers, seq_len, d_model)
-                elif isinstance(crv_layers, list):
-                    # if more than one layer specified
-                    prompt_stacked_crv = (
-                        torch.stack(
-                            [
-                                output
-                                for idx, output in enumerate(outputs.hidden_states)
-                                if idx in crv_layers
-                            ],
-                            dim=0,
-                        )
-                        .squeeze(1)
-                        .transpose(0, 1)
-                    )  # (b, len(crv_layers), seq_len, d_model)
-                elif isinstance(crv_layers, int):
-                    # if saving one layer
-                    print(
-                        "int - outputs.hidden_states[crv_layers].shape: ",
-                        outputs.hidden_states[batch_idx].shape,
-                    )
-                    prompt_stacked_crv = outputs.hidden_states[crv_layers].squeeze(
-                        1
-                    )  # (b, seq_len, d_model)
-
-                print("prompt_stacked_crv: ", prompt_stacked_crv.shape)
-                # Use the last hidden state as the CRV
-                # batch_crvs = outputs.hidden_states[-1].mean(dim=1)  # Average pooling
-                crvs.append(prompt_stacked_crv)
-
-                if (batch_idx + 1) % CRV_SAVE_BATCH == 0:
-                    print(f"Processed {(batch_idx + 1) * BATCH_SIZE} contexts")
-
-        # Stack all CRVs
-        crvs_tensor = torch.cat(crvs, dim=0)
-
-        # Save CRVs
-        torch.save(crvs_tensor, output_file)
-        print(f"CRVs saved to {output_file}")
-
-    elif isinstance(input, str):
-        logger.info("The input received is a query")
-        with torch.no_grad():
-            # inputs = tokenizer(input, return_tensors="pt").to(model.device)
-            inputs = tokenizer(
-                input,
-                max_length=MAX_LENGTH,
-                padding="max_length",
-                truncation=True,
-                return_tensors="pt",
+    def _write_results_to_file(self, output_file, results, prompt, **kwargs):
+        with open(output_file, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [prompt] + results + [f"{k}={v}" for k, v in kwargs.items()]
             )
-            inputs = inputs["input_ids"]
-            # generate embeds
-            outputs = model(
-                inputs,
-                output_hidden_states=True,
-                return_dict=True,
-            )
-
-            if crv_layers == None:
-                print(
-                    "outputs.hidden_states[crv_layers].shape: ",
-                    # outputs.hidden_states[batch_idx].shape,
-                )
-                prompt_stacked_crv = torch.stack(
-                    [output for output in outputs.hidden_states], dim=0
-                ).squeeze(
-                    1
-                )  # (layers, seq_len, d_model)
-            elif isinstance(crv_layers, list):
-                # if more than one layer specified
-                prompt_stacked_crv = torch.stack(
-                    [
-                        output
-                        for idx, output in enumerate(outputs.hidden_states)
-                        if idx in crv_layers
-                    ],
-                    dim=0,
-                ).squeeze(
-                    1
-                )  # (len(crv_layers), seq_len, d_model)
-            elif isinstance(crv_layers, int):
-                # if saving one layer
-                prompt_stacked_crv = outputs.hidden_states[crv_layers].squeeze(
-                    1
-                )  # (1, seq_len, d_model), the 1 is the len(crv_layers)
-            print("prompt_stacked_crv: ", prompt_stacked_crv.shape)
-
-        crvs_tensor = prompt_stacked_crv
-
-    return crvs_tensor
 
 
 def main():
@@ -457,7 +260,7 @@ def main():
     print("config.hidden_size: ", config.num_hidden_layers)
     print("config._attn_implementation: ", config._attn_implementation)
 
-    crv_generator = CRVGenerator(model, tokenizer, max_length=MAX_LENGTH)
+    crv_generator = CRVGenerator(model, tokenizer, max_length=configs.MAX_LENGTH)
     crvs_file = crv_generator.generate_crvs(
         "dataset", "data/new_stack.pt", crv_layers=crv_layers
     )
@@ -488,7 +291,9 @@ def main():
     #     query, crvs_file, model, tokenizer, crv_layers=crv_layers
     # )
 
-    retriever = CRVRetriever(model, tokenizer, crv_layers, max_length=MAX_LENGTH)
+    retriever = CRVRetriever(
+        model, tokenizer, crv_layers, max_length=configs.MAX_LENGTH
+    )
     best_crv = retriever(query, crvs_file)
     print("best_crv.shape: ", best_crv.shape)
     #
@@ -497,24 +302,29 @@ def main():
     # print("Reduced CRV:", str(reduced_crv[0]))
 
     # # Set the CRV in the model (e.g., integrate at layer 5)
-    model.model.set_crv(best_crv, layer_idx=1, crv_layers=crv_layers)
+    # model.model.set_crv(best_crv, layer_idx=1, crv_layers=crv_layers)
 
-    generated_text = generate_text(
-        model,
-        tokenizer,
-        prompt=query,
-        # max_length=100,
-        max_new_tokens=300,
-        num_return_sequences=1,
-        temperature=1.0,
-        top_k=1,
-        top_p=0.95,
-        repetition_penalty=1.2,
-        no_repeat_ngram_size=3,
-        cross_attend=False,
-        config=config,
-        crv_layer_idx=[5, 10],
+    text_generator = TextGenerator(model, tokenizer)
+    generated_text = text_generator.generate_text(
+        "Once upon a time", output_file="data/results.csv"
     )
+
+    # generated_text = generate_text(
+    #     model,
+    #     tokenizer,
+    #     prompt=query,
+    #     # max_length=100,
+    #     max_new_tokens=300,
+    #     num_return_sequences=1,
+    #     temperature=1.0,
+    #     top_k=1,
+    #     top_p=0.95,
+    #     repetition_penalty=1.2,
+    #     no_repeat_ngram_size=3,
+    #     cross_attend=False,
+    #     config=config,
+    #     crv_layer_idx=[5, 10],
+    # )
     print(generated_text)
 
 

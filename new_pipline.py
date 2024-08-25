@@ -5,13 +5,11 @@ from transformers import AutoConfig, AutoTokenizer
 import configs
 from generator.crv_generator import CRVGenerator
 from generator.text_generator import TextGenerator
-from moc_layers import LlamaForCausalLM
 
 from retrieve.cosine_similarity import CRVRetriever
-from utils import set_seed, logger
+from utils import set_seed, logger, CustomTransformerLoader
 
 logger = logger()
-# Constants
 
 
 class DNMemory(nn.Module):
@@ -117,26 +115,6 @@ class CRVMemoryManager:
         return output
 
 
-def load_custom_transformer(
-    model_path, tokenizer_path, hf_token=None, load_in_8bit=False, seed=42
-):
-    set_seed(seed)
-    # Load the tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_auth_token=hf_token)
-    tokenizer.pad_token = tokenizer.eos_token
-
-    model = LlamaForCausalLM.from_pretrained(
-        model_path,
-        use_auth_token=hf_token,
-        device_map="auto",
-        # load_in_8bit=load_in_8bit,
-        torch_dtype=torch.float16,
-    )
-    model.eval()  # Set the model to evaluation mode
-
-    return model, tokenizer
-
-
 def main():
     seed = 42
     set_seed(seed)
@@ -150,8 +128,11 @@ def main():
     # model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
     hf_token = "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"
     config = AutoConfig.from_pretrained(model_path, use_auth_token=hf_token)
-    model, tokenizer = load_custom_transformer(
-        model_path, tokenizer_path, hf_token=hf_token
+
+    loader = CustomTransformerLoader()
+
+    model, tokenizer = loader.load_model(
+        model_path=model_path, tokenizer_path=tokenizer_path, hf_token=hf_token
     )
 
     crv_layers = [1, 10, 15, 20, 32]

@@ -436,7 +436,7 @@ def main():
                     "No similar CRV found or error occurred during similarity computation."
                 )
 
-        break  # Just for demonstration, remove this in actual use
+        break
 
 
 if __name__ == "__main__":

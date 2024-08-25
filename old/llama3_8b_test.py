@@ -62,7 +62,7 @@ class MoCSdpaAttention(LlamaAttention):
         self.attention_option = attention_option
         self.cross_attend = cross_attend
         if self.cross_attend:
-            filename = "data/crvs.pt"
+            filename = "../data/crvs.pt"
             loaded_crvs = torch.load(filename)
             # print("loaded crvs from moc layer: ", len(loaded_crvs), loaded_crvs.shape)
             self.layer_crv = loaded_crvs[self.layer_idx]

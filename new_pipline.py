@@ -167,14 +167,6 @@ def main():
         "dataset", "data/new_stack.pt", crv_layers=crv_layers
     )
 
-    # crvs_file = generate_crvs(
-    #     model,
-    #     tokenizer,
-    #     input="dataset",
-    #     output_file="data/new_stack.pt",
-    #     crv_layers=crv_layers,
-    # )  # shape: (subset_size, crv_layers, seq_len, d_model)
-
     # query = "Solve the following problem: If x + y = 10 and x - y = 4, what are the values of x and y?"
     query = (
         "Problem: Grant has four times as many vacations as Kelvin has classes. If Kelvin has 90 classes, "
@@ -187,12 +179,6 @@ def main():
     # query = "Problem: Find the center of the circle with equation $x^2 - 6x + 5y = 11$. Solution:"
 
     # Input query
-
-    # Retrieve the best CRV
-    # best_crv = retrieve_best_crv(
-    #     query, crvs_file, model, tokenizer, crv_layers=crv_layers
-    # )
-
     retriever = CRVRetriever(
         model, tokenizer, crv_layers, max_length=configs.MAX_LENGTH
     )
@@ -204,29 +190,13 @@ def main():
     # print("Reduced CRV:", str(reduced_crv[0]))
 
     # # Set the CRV in the model (e.g., integrate at layer 5)
-    # model.model.set_crv(best_crv, layer_idx=1, crv_layers=crv_layers)
+    model.model.set_crv(best_crv, layer_idx=1, crv_layers=crv_layers)
 
     text_generator = TextGenerator(model, tokenizer)
     generated_text = text_generator.generate_text(
         "Once upon a time", output_file="data/results.csv"
     )
 
-    # generated_text = generate_text(
-    #     model,
-    #     tokenizer,
-    #     prompt=query,
-    #     # max_length=100,
-    #     max_new_tokens=300,
-    #     num_return_sequences=1,
-    #     temperature=1.0,
-    #     top_k=1,
-    #     top_p=0.95,
-    #     repetition_penalty=1.2,
-    #     no_repeat_ngram_size=3,
-    #     cross_attend=False,
-    #     config=config,
-    #     crv_layer_idx=[5, 10],
-    # )
     print(generated_text)
 
 

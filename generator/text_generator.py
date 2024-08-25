@@ -31,7 +31,7 @@ class TextGenerator:
         top_p: float = 0.95,
         repetition_penalty: float = 1.2,
         no_repeat_ngram_size: int = 1,
-        crv_layer_idx: Optional[int] = None,
+        crv_layer_idx: Optional[Union[int, list]] = None,
         output_file: Optional[str] = None,
     ) -> Union[str, list]:
         """

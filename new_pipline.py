@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoConfig, AutoTokenizer
+from transformers import AutoConfig
 import configs
+from data_processor.data_loader import GSM8KDataset
 from generator.crv_generator import CRVGenerator
 from generator.text_generator import TextGenerator
 
@@ -135,36 +136,54 @@ def main():
         model_path=model_path, tokenizer_path=tokenizer_path, hf_token=hf_token
     )
 
-    crv_layers = [1, 10, 15, 20, 32]
-    # crv_layers = 32
+    crv_layers = configs.CRV_LAYERS
 
-    prompt = "elaborate more."
     print("model type: ", type(model))
     print("config.hidden_size: ", config.num_hidden_layers)
     print("config._attn_implementation: ", config._attn_implementation)
 
+    dataset = GSM8KDataset(tokenizer, split="train", subset_size=configs.SUBSET_SIZE)
+
     crv_generator = CRVGenerator(model, tokenizer, max_length=configs.MAX_LENGTH)
     crvs_file = crv_generator.generate_crvs(
-        "dataset", "data/new_stack.pt", crv_layers=crv_layers
+        dataset, "data/new_stack.pt", crv_layers=crv_layers
     )
 
     # query = "Solve the following problem: If x + y = 10 and x - y = 4, what are the values of x and y?"
     query = (
-        "Problem: Grant has four times as many vacations as Kelvin has classes. If Kelvin has 90 classes, "
-        "how many vacations and classes do Grant and Kelvin have altogether?"
+        "Problem: Ines had $20 in her purse. She bought 3 pounds of peaches, which are $2 per pound at the local "
+        "farmers’ market. How much did she have left? "
+        "Solution: Ines bought 3 pounds of peaches for 3 peaches * $2/peach = $<<3*2=6>>6. "
+        "Ines has $20 - $6 = $<<20-6=14>>14 left. "
+        "#### 14 "
     )
-    query = (
-        "Aaron pays his actuary membership fees each year. The membership fee increases yearly by $10. If he "
-        "pays $80 in the first year, how much does his membership cost, in dollars, in the sixth year?"
-    )
-    # query = "Problem: Find the center of the circle with equation $x^2 - 6x + 5y = 11$. Solution:"
+
+    query = """Problem: For every 12 cans you recycle, you receive $0.50, and for every 5 kilograms of newspapers, you receive $1.50. If your family collected 144 cans and 20 kilograms of newspapers, how much money would you receive?
+        Solution: There are 144/12 = <<144/12=12>>12 sets of 12 cans that the family collected.
+        So, the family would receive $0.50 x 12 = $<<0.50*12=6>>6 for the cans."""
+    # query = "this is test:"
+
+    query = """Problem: Betty picked 16 strawberries. Matthew picked 20 more strawberries than Betty and twice as many as Natalie. They used their strawberries to make jam. One jar of jam used 7 strawberries and they sold each jar at $4. How much money were they able to make from the strawberries they picked?
+        Solution: Matthew picked 16 + 20 = <<16+20=36>>36 strawberries.
+        Natalie picked 36/2 = <<36/2=18>>18 strawberries.
+        All together, they have 16 + 36 + 18 = <<16+36+18=70>>70 strawberries.
+        They can make 70/7 = <<70/7=10>>10 jars of strawberries.
+        They earn 10 x $4 = $<<10*4=40>>40 from the strawberries they picked.
+        #### 40 """
+    query = """Problem: James dumps his whole collection of 500 Legos on the floor and starts building a castle out of them.  He uses half the pieces before finishing and is told to put the rest away.  He puts all of the leftover pieces back in the box they came from, except for 5 missing pieces that he can't find.  How many Legos are in the box at the end?
+        Solution"""
 
     # Input query
     retriever = CRVRetriever(
         model, tokenizer, crv_layers, max_length=configs.MAX_LENGTH
     )
+    print("data loaded")
+
     best_crv = retriever(query, crvs_file)
+    # best_crv, best_seq_length = retriever(query, crvs_file)
     print("best_crv.shape: ", best_crv.shape)
+    # print("best_seq_length: ", best_seq_length)
+
     #
     # reduced_crv = best_crv.mean(dim=-1)  # (layers/len(crv_layers), seq_len)
     # print("Reduced CRV shape:", reduced_crv.shape)
@@ -172,13 +191,11 @@ def main():
 
     # # Set the CRV in the model (e.g., integrate at layer 5)
     model.model.set_crv(best_crv, layer_idx=1, crv_layers=crv_layers)
-
+    model.model.set_post_concat_crv(False)
     text_generator = TextGenerator(model, tokenizer)
-    generated_text = text_generator.generate_text(
-        "Once upon a time", output_file="data/results.csv"
-    )
+    generated_text = text_generator.generate_text(query, output_file="data/results.csv")
 
-    print(generated_text)
+    # print(generated_text)
 
 
 if __name__ == "__main__":

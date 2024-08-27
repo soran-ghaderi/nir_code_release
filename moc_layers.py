@@ -1183,7 +1183,7 @@ class MoCLlamaDecoderLayer(nn.Module):
             # )
             print("hidden states before cat: ", hidden_states.shape)
             # hidden_states = torch.cat([hidden_states, self.layer_crv[:, :50, :]], dim=1)
-            # hidden_states = torch.cat([hidden_states, self.layer_crv], dim=1)
+            hidden_states = torch.cat([hidden_states, self.layer_crv], dim=1)
             print("hidden states aftert cat: ", hidden_states.shape)
             self.is_crv_cat = True
         residual = hidden_states
@@ -1322,6 +1322,7 @@ class LlamaModel(LlamaPreTrainedModel):
         self.crv = None
         self.crv_layer_idx = None
         self.crv_layers = None
+        self.post_concat = False
 
     # new method
 
@@ -1329,6 +1330,9 @@ class LlamaModel(LlamaPreTrainedModel):
         self.crv = crv
         self.crv_layer_idx = layer_idx
         self.crv_layers = crv_layers
+
+    def set_post_concat_crv(self, post_concat: bool = True):
+        self.post_concat = post_concat
 
     def set_layers_to_concat(self, layer_idx):
         self.crv_layer_idx = layer_idx
@@ -1484,7 +1488,14 @@ class LlamaModel(LlamaPreTrainedModel):
                         hidden_states[0][0],
                     )
                     # hidden_states = torch.cat([hidden_states, self.layer_crv[:, :50, :]], dim=1)
-                    hidden_states = torch.cat([self.layer_crv, hidden_states], dim=1)
+                    if self.post_concat:
+                        hidden_states = torch.cat(
+                            [hidden_states, self.layer_crv], dim=1
+                        )
+                    else:
+                        hidden_states = torch.cat(
+                            [self.layer_crv, hidden_states], dim=1
+                        )
                     print("hidden states after cat: ", hidden_states.shape)
                     self.is_crv_concatenated = True
 

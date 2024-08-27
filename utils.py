@@ -60,8 +60,8 @@ class CustomTransformerLoader:
             model_path,
             use_auth_token=hf_token,
             device_map="auto",
-            load_in_8bit=load_in_8bit,
-            torch_dtype=torch.float16,
+            # load_in_8bit=load_in_8bit,
+            # torch_dtype=torch.float16,
         )
         self.model.eval()  # Set the model to evaluation mode
 

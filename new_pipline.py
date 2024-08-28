@@ -149,6 +149,10 @@ def main():
         dataset, "data/new_stack.pt", crv_layers=crv_layers
     )
 
+    print("piple crvs_file: ", type(crvs_file))
+    print("piple crvs_file: ", crvs_file[0].shape)
+    print("piple crvs_file: ", crvs_file[1].shape, crvs_file[1])
+
     # query = "Solve the following problem: If x + y = 10 and x - y = 4, what are the values of x and y?"
     query = (
         "Problem: Ines had $20 in her purse. She bought 3 pounds of peaches, which are $2 per pound at the local "
@@ -172,6 +176,8 @@ def main():
         #### 40 """
     query = """Problem: James dumps his whole collection of 500 Legos on the floor and starts building a castle out of them.  He uses half the pieces before finishing and is told to put the rest away.  He puts all of the leftover pieces back in the box they came from, except for 5 missing pieces that he can't find.  How many Legos are in the box at the end?
         Solution"""
+    query = """Problem: Jack has a stack of books that is 12 inches thick. He knows from experience that 80 pages is one inch thick. If he has 6 books, how many pages is each one on average?
+Solution: There are 960 pages because 80 x 12 ="""
 
     # Input query
     retriever = CRVRetriever(
@@ -179,19 +185,22 @@ def main():
     )
     print("data loaded")
 
-    best_crv = retriever(query, crvs_file)
-    # best_crv, best_seq_length = retriever(query, crvs_file)
+    # best_crv = retriever(query, crvs_file)
+    best_crv, best_seq_length = retriever(query, crvs_file)
     print("best_crv.shape: ", best_crv.shape)
-    # print("best_seq_length: ", best_seq_length)
+    print("best_seq_length: ", best_seq_length)
 
     #
     # reduced_crv = best_crv.mean(dim=-1)  # (layers/len(crv_layers), seq_len)
     # print("Reduced CRV shape:", reduced_crv.shape)
     # print("Reduced CRV:", str(reduced_crv[0]))
 
-    # # Set the CRV in the model (e.g., integrate at layer 5)
-    model.model.set_crv(best_crv, layer_idx=1, crv_layers=crv_layers)
-    model.model.set_post_concat_crv(False)
+    sliced_best_crv = best_crv[:, :best_seq_length, :]
+    print("sliced_best_crv.shape: ", sliced_best_crv.shape)
+
+    # Set the CRV in the model (e.g., integrate at layer 1)
+    model.model.set_crv(sliced_best_crv, layer_idx=1, crv_layers=crv_layers)
+    model.model.set_post_concat_crv(True)
     text_generator = TextGenerator(model, tokenizer)
     generated_text = text_generator.generate_text(query, output_file="data/results.csv")
 

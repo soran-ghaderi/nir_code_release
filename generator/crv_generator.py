@@ -10,7 +10,7 @@ from utils import logger
 logger = logger()
 
 
-class CRVGenerator2:
+class CRVGenerator:
     def __init__(self, model, tokenizer, max_length=512, seed=42):
         self.model = model
         self.tokenizer = tokenizer
@@ -100,6 +100,7 @@ class CRVGenerator2:
 
         crvs_tensor = torch.cat(crvs, dim=0)  # (layers, b, seq_len, dim)
         crvs_tensor = crvs_tensor.transpose(0, 1)  # (b, layers, seq_len, dim)
+
         seq_lengths_tensor = torch.cat(seq_lengths, dim=0)  # (b,)
 
         torch.save(
@@ -154,7 +155,7 @@ class CRVGenerator2:
         return prompt_stacked_crv
 
 
-class CRVGenerator:
+class CRVGenerator1:
     def __init__(self, model, tokenizer, max_length=512, seed=42):
         self.model = model
         self.tokenizer = tokenizer

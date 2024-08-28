@@ -125,8 +125,6 @@ def main():
     }
     model_path = model_urls["llama31"]
     tokenizer_path = model_path
-    # tokenizer_path = "meta-llama/Meta-Llama-3-8B-Instruct"
-    # model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
     hf_token = "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"
     config = AutoConfig.from_pretrained(model_path, use_auth_token=hf_token)
 
@@ -177,7 +175,7 @@ def main():
     query = """Problem: James dumps his whole collection of 500 Legos on the floor and starts building a castle out of them.  He uses half the pieces before finishing and is told to put the rest away.  He puts all of the leftover pieces back in the box they came from, except for 5 missing pieces that he can't find.  How many Legos are in the box at the end?
         Solution"""
     query = """Problem: Jack has a stack of books that is 12 inches thick. He knows from experience that 80 pages is one inch thick. If he has 6 books, how many pages is each one on average?
-Solution: There are 960 pages because 80 x 12 ="""
+Solution: ?"""
 
     # Input query
     retriever = CRVRetriever(
@@ -190,21 +188,14 @@ Solution: There are 960 pages because 80 x 12 ="""
     print("best_crv.shape: ", best_crv.shape)
     print("best_seq_length: ", best_seq_length)
 
-    #
-    # reduced_crv = best_crv.mean(dim=-1)  # (layers/len(crv_layers), seq_len)
-    # print("Reduced CRV shape:", reduced_crv.shape)
-    # print("Reduced CRV:", str(reduced_crv[0]))
-
     sliced_best_crv = best_crv[:, :best_seq_length, :]
     print("sliced_best_crv.shape: ", sliced_best_crv.shape)
 
     # Set the CRV in the model (e.g., integrate at layer 1)
-    model.model.set_crv(sliced_best_crv, layer_idx=1, crv_layers=crv_layers)
-    model.model.set_post_concat_crv(True)
+    model.model.set_crv(sliced_best_crv, layer_idx=32, crv_layers=crv_layers)
+    # model.model.set_post_concat_crv(True)
     text_generator = TextGenerator(model, tokenizer)
     generated_text = text_generator.generate_text(query, output_file="data/results.csv")
-
-    # print(generated_text)
 
 
 if __name__ == "__main__":

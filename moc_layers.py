@@ -1480,6 +1480,11 @@ class LlamaModel(LlamaPreTrainedModel):
                         0
                     )  # Add a dimension at index 0
                     print("shape of the new layer_crv: ", self.layer_crv.shape)
+                    print(
+                        "cat al layers (saved layers idx, and model idx): ",
+                        self.crv_layers.index(layer_idx),
+                        layer_idx,
+                    )
                     # print("concating ... ")
                     self.layer_crv = self.layer_crv.to(hidden_states.device)
                     print(

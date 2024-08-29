@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoConfig
 import configs
+from controller.memory_manager import MemoryManager
 from data_processor.data_loader import GSM8KDataset
 from generator.crv_generator import CRVGenerator
 from generator.text_generator import TextGenerator
@@ -177,6 +178,8 @@ def main():
     query = """Problem: Jack has a stack of books that is 12 inches thick. He knows from experience that 80 pages is one inch thick. If he has 6 books, how many pages is each one on average?
 Solution: ?"""
 
+    memory_manager = MemoryManager(model, max_memories=5)
+
     # Input query
     retriever = CRVRetriever(
         model, tokenizer, crv_layers, max_length=configs.MAX_LENGTH
@@ -191,8 +194,15 @@ Solution: ?"""
     sliced_best_crv = best_crv[:, :best_seq_length, :]
     print("sliced_best_crv.shape: ", sliced_best_crv.shape)
 
+    memory_manager.add_memory(
+        best_crv, best_seq_length, layer_idx=1, crv_layers=crv_layers
+    )
+
+    memory_manager.set_concat_positions(0, start_pos=0, end_pos=best_seq_length)
+    memory_manager.apply_memory_to_model(0)
+
     # Set the CRV in the model (e.g., integrate at layer 1)
-    model.model.set_crv(sliced_best_crv, layer_idx=32, crv_layers=crv_layers)
+    # model.model.set_crv(sliced_best_crv, layer_idx=32, crv_layers=crv_layers)
     # model.model.set_post_concat_crv(True)
     text_generator = TextGenerator(model, tokenizer)
     generated_text = text_generator.generate_text(query, output_file="data/results.csv")

@@ -1323,13 +1323,28 @@ class LlamaModel(LlamaPreTrainedModel):
         self.crv_layer_idx = None
         self.crv_layers = None
         self.post_concat = False
+        self.crv_start_pos = None
+        self.crv_end_pos = None
 
     # new method
 
-    def set_crv(self, crv, layer_idx, crv_layers):
+    def set_crv(
+        self,
+        crv,
+        layer_idx,
+        crv_layers,
+        start_pos: Optional[int] = None,
+        end_pos: Optional[int] = None,
+    ):
         self.crv = crv
         self.crv_layer_idx = layer_idx
         self.crv_layers = crv_layers
+        self.crv_start_pos = start_pos
+        self.crv_end_pos = end_pos
+
+        print(f"Set CRV with shape {crv.shape} at layer {layer_idx}")
+        print(f"CRV layers: {crv_layers}")
+        print(f"Concat positions: start={start_pos}, end={end_pos}")
 
     def set_post_concat_crv(self, post_concat: bool = True):
         self.post_concat = post_concat

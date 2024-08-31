@@ -36,8 +36,11 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 
+from rich import print
+from utils import set_seed, logger
 
-logger = logging.get_logger(__name__)
+logger = logger()
+# logger = logging.get_logger(__name__)
 _CONFIG_FOR_DOC = "LlamaConfig"
 
 

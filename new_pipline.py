@@ -9,9 +9,10 @@ from generator.crv_generator import CRVGenerator
 from generator.text_generator import TextGenerator
 
 from retrieve.cosine_similarity import CRVRetriever
-from utils import set_seed, logger, CustomTransformerLoader
+from utils import set_seed, logger
+from utils.loading_model import CustomTransformerLoader
 
-from rich import print
+from rich import print, rule
 
 logger = logger()
 
@@ -119,9 +120,14 @@ class CRVMemoryManager:
         return output
 
 
+from rich.console import Console
+
+
 def main():
+    console = Console()
     seed = 42
     set_seed(seed)
+
     model_urls = {
         "llama31": "meta-llama/Meta-Llama-3.1-8B-Instruct",
         "llama3": "meta-llama/Meta-Llama-3-8B-Instruct",
@@ -131,6 +137,7 @@ def main():
     hf_token = "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"
     config = AutoConfig.from_pretrained(model_path, use_auth_token=hf_token)
 
+    console.rule("[bold red]Loading the Model")
     loader = CustomTransformerLoader()
 
     model, tokenizer = loader.load_model(
@@ -143,6 +150,8 @@ def main():
     print("config.hidden_size: ", config.num_hidden_layers)
     print("config._attn_implementation: ", config._attn_implementation)
 
+    console.rule("[bold red]Loading the dataset and generating the CRVs")
+
     dataset = GSM8KDataset(tokenizer, split="train", subset_size=configs.SUBSET_SIZE)
 
     crv_generator = CRVGenerator(model, tokenizer, max_length=configs.MAX_LENGTH)
@@ -153,7 +162,6 @@ def main():
     print("piple crvs_file: ", type(crvs_file))
     print("piple crvs_file: ", crvs_file[0].shape)
     print("piple crvs_file: ", crvs_file[1].shape, crvs_file[1])
-
     # query = "Solve the following problem: If x + y = 10 and x - y = 4, what are the values of x and y?"
     query = (
         "Problem: Ines had $20 in her purse. She bought 3 pounds of peaches, which are $2 per pound at the local "
@@ -180,6 +188,8 @@ def main():
     # query = """Rectilinear grid does not allow Sequences as inputs ### Describe the bug, what's wrong, and what you expected. Rectilinear grid gives an error when `Sequence`s are passed in, but `ndarray` are ok. ### Steps to reproduce the bug. This doesn't work ```python import pyvista as pv pv.RectilinearGrid([0, 1], [0, 1], [0, 1]) ``` This works ```py import pyvista as pv import numpy as np pv.RectilinearGrid(np.ndarray([0, 1]), np.ndarray([0, 1]), np.ndarray([0, 1])) ``` ### System Information ```shell -------------------------------------------------------------------------------- Date: Wed Apr 19 20:15:10 2023 UTC OS : Linux CPU(s) : 2 Machine : x86_64 Architecture : 64bit Environment : IPython GPU Vendor : Mesa/X.org GPU Renderer : llvmpipe (LLVM 11.0.1, 256 bits) GPU Version : 4.5 (Core Profile) Mesa 20.3.5 Python 3.11.2 (main, Mar 23 2023, 17:12:29) [GCC 10.2.1 20210110] pyvista : 0.38.5 vtk : 9.2.6 numpy : 1.24.2 imageio : 2.27.0 scooby : 0.7.1 pooch : v1.7.0 matplotlib : 3.7.1 IPython : 8.12.0 -------------------------------------------------------------------------------- ``` ### Screenshots _No response_"""
     # query = """write a python code to print hello world."""
 
+    console.rule("[bold red]Retrieving the best CRV")
+
     memory_manager = MemoryManager(model, max_memories=5)
 
     # Input query
@@ -196,9 +206,12 @@ def main():
     sliced_best_crv = best_crv[:, :best_seq_length, :]
     print("sliced_best_crv.shape: ", sliced_best_crv.shape)
 
+    layer_idx = 10
     memory_manager.add_memory(
-        best_crv, best_seq_length, layer_idx=10, crv_layers=crv_layers
+        best_crv, best_seq_length, layer_idx=layer_idx, crv_layers=crv_layers
     )
+
+    console.rule(f"[bold red]Concat the CRV and the hidden state at layer {layer_idx}")
 
     memory_manager.set_concat_positions(0, start_pos=0, end_pos=best_seq_length)
     memory_manager.apply_memory_to_model(0)
@@ -206,6 +219,9 @@ def main():
     # Set the CRV in the model (e.g., integrate at layer 1)
     # model.model.set_crv(sliced_best_crv, layer_idx=5, crv_layers=crv_layers)
     # model.model.set_post_concat_crv(True)
+
+    console.rule(f"[bold red]Generating the outputs")
+
     text_generator = TextGenerator(model, tokenizer)
     generated_text = text_generator.generate_text(
         query,

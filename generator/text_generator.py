@@ -10,6 +10,7 @@ from rich.logging import RichHandler
 
 import configs
 
+from rich.panel import Panel
 
 logger = logger()
 
@@ -82,6 +83,9 @@ class TextGenerator:
         input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(
             self.model.device
         )
+
+        def update_display(text):
+            return Panel(text, title="Generated Text", border_style="cyan")
 
         if stop_sequences:
             stopping_criteria = StoppingCriteriaList(

@@ -4,8 +4,11 @@ from typing import Optional, Tuple
 
 import numpy as np
 import torch
+from rich.logging import RichHandler
 from transformers import AutoTokenizer
 
+
+import configs
 from moc_layers import LlamaForCausalLM
 
 
@@ -20,8 +23,19 @@ def set_seed(seed):
 
 
 def logger():
-    logger = logging.getLogger(__name__)
-    logging.basicConfig(level=logging.INFO)
+    if configs.USE_RICH:
+
+        logging.basicConfig(
+            level="INFO",
+            format="%(message)s",
+            datefmt="[%X]",
+            handlers=[RichHandler(rich_tracebacks=True)],
+        )
+        logger = logging.getLogger("rich")
+    else:
+
+        logger = logging.getLogger(__name__)
+        logging.basicConfig(level=logging.INFO)
     return logger
 
 

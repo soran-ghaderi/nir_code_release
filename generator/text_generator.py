@@ -1,8 +1,34 @@
 import csv
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 import torch
-from transformers import TextStreamer
+from transformers import TextStreamer, StoppingCriteria, StoppingCriteriaList
+from utils import logger
+
+from rich import print
+from rich.logging import RichHandler
+
+import configs
+
+
+logger = logger()
+
+
+class CustomStoppingCriteria(StoppingCriteria):
+    def __init__(self, tokenizer, stops=None, encounters=1):
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.stops = stops or []
+        self.encounters = encounters
+        self.count = 0
+
+    def __call__(self, input_ids, scores, **kwargs):
+        decoded = self.tokenizer.decode(input_ids[0][-1:])
+        if any(stop in decoded for stop in self.stops):
+            self.count += 1
+            if self.count >= self.encounters:
+                return True
+        return False
 
 
 class TextGenerator:
@@ -33,6 +59,8 @@ class TextGenerator:
         no_repeat_ngram_size: int = 1,
         crv_layer_idx: Optional[Union[int, list]] = None,
         output_file: Optional[str] = None,
+        use_eos_token: bool = True,
+        stop_sequences: Optional[List[str]] = None,
     ) -> Union[str, list]:
         """
         Generate text based on the given prompt and parameters.
@@ -55,6 +83,12 @@ class TextGenerator:
             self.model.device
         )
 
+        if stop_sequences:
+            stopping_criteria = StoppingCriteriaList(
+                [CustomStoppingCriteria(tokenizer=self.tokenizer, stops=stop_sequences)]
+            )
+        else:
+            stopping_criteria = None
         generate_kwargs = {
             "input_ids": input_ids,
             "max_length": max_length,
@@ -67,7 +101,12 @@ class TextGenerator:
             "repetition_penalty": repetition_penalty,
             "no_repeat_ngram_size": no_repeat_ngram_size,
             "streamer": self.streamer,
+            "stopping_criteria": stopping_criteria,
         }
+
+        eos_token_id = self.tokenizer.eos_token_id
+        if use_eos_token:
+            generate_kwargs["eos_token_id"] = eos_token_id
 
         if crv_layer_idx is not None:
             print(f"Concatenate at layer {crv_layer_idx}:")

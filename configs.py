@@ -6,8 +6,10 @@ SUBSET_SIZE = 7
 CRV_SAVE_BATCH = 20
 CRV_LAYERS = [
     1,
+    5,
     10,
     15,
     20,
     32,
 ]  # the hidden states include the input embedding layer therefore idx 0 is the embeds lyr
+USE_RICH = True

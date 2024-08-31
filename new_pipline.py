@@ -11,6 +11,8 @@ from generator.text_generator import TextGenerator
 from retrieve.cosine_similarity import CRVRetriever
 from utils import set_seed, logger, CustomTransformerLoader
 
+from rich import print
+
 logger = logger()
 
 
@@ -137,7 +139,7 @@ def main():
 
     crv_layers = configs.CRV_LAYERS
 
-    print("model type: ", type(model))
+    print(":warning: model type: ", type(model))
     print("config.hidden_size: ", config.num_hidden_layers)
     print("config._attn_implementation: ", config._attn_implementation)
 
@@ -175,8 +177,8 @@ def main():
         #### 40 """
     query = """Problem: James dumps his whole collection of 500 Legos on the floor and starts building a castle out of them.  He uses half the pieces before finishing and is told to put the rest away.  He puts all of the leftover pieces back in the box they came from, except for 5 missing pieces that he can't find.  How many Legos are in the box at the end?
         Solution"""
-    query = """Problem: Jack has a stack of books that is 12 inches thick. He knows from experience that 80 pages is one inch thick. If he has 6 books, how many pages is each one on average?
-Solution: ?"""
+    # query = """Rectilinear grid does not allow Sequences as inputs ### Describe the bug, what's wrong, and what you expected. Rectilinear grid gives an error when `Sequence`s are passed in, but `ndarray` are ok. ### Steps to reproduce the bug. This doesn't work ```python import pyvista as pv pv.RectilinearGrid([0, 1], [0, 1], [0, 1]) ``` This works ```py import pyvista as pv import numpy as np pv.RectilinearGrid(np.ndarray([0, 1]), np.ndarray([0, 1]), np.ndarray([0, 1])) ``` ### System Information ```shell -------------------------------------------------------------------------------- Date: Wed Apr 19 20:15:10 2023 UTC OS : Linux CPU(s) : 2 Machine : x86_64 Architecture : 64bit Environment : IPython GPU Vendor : Mesa/X.org GPU Renderer : llvmpipe (LLVM 11.0.1, 256 bits) GPU Version : 4.5 (Core Profile) Mesa 20.3.5 Python 3.11.2 (main, Mar 23 2023, 17:12:29) [GCC 10.2.1 20210110] pyvista : 0.38.5 vtk : 9.2.6 numpy : 1.24.2 imageio : 2.27.0 scooby : 0.7.1 pooch : v1.7.0 matplotlib : 3.7.1 IPython : 8.12.0 -------------------------------------------------------------------------------- ``` ### Screenshots _No response_"""
+    # query = """write a python code to print hello world."""
 
     memory_manager = MemoryManager(model, max_memories=5)
 
@@ -195,17 +197,22 @@ Solution: ?"""
     print("sliced_best_crv.shape: ", sliced_best_crv.shape)
 
     memory_manager.add_memory(
-        best_crv, best_seq_length, layer_idx=1, crv_layers=crv_layers
+        best_crv, best_seq_length, layer_idx=10, crv_layers=crv_layers
     )
 
     memory_manager.set_concat_positions(0, start_pos=0, end_pos=best_seq_length)
     memory_manager.apply_memory_to_model(0)
 
     # Set the CRV in the model (e.g., integrate at layer 1)
-    # model.model.set_crv(sliced_best_crv, layer_idx=32, crv_layers=crv_layers)
+    # model.model.set_crv(sliced_best_crv, layer_idx=5, crv_layers=crv_layers)
     # model.model.set_post_concat_crv(True)
     text_generator = TextGenerator(model, tokenizer)
-    generated_text = text_generator.generate_text(query, output_file="data/results.csv")
+    generated_text = text_generator.generate_text(
+        query,
+        max_new_tokens=500,
+        output_file="data/results.csv",
+        stop_sequences=["The end", ".\n\n"],
+    )
 
 
 if __name__ == "__main__":

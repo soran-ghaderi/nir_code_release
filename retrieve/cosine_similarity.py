@@ -104,7 +104,7 @@ class CRVRetriever:
         best_crv_index = best_indices[0].item()
         self.logger.info(f"Best CRV index: {best_crv_index}")
 
-        return crvs[best_crv_index], seq_lengths[best_crv_index]
+        return crvs[best_crv_index], seq_lengths[best_crv_index], similarities
 
     def __call__(
         self, query: str, crvs_file: Union[str, Dict[str, torch.Tensor]]

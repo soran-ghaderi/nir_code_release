@@ -1,6 +1,3 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from transformers import AutoConfig
 import configs
 from controller.memory_manager import MemoryManager
@@ -9,100 +6,16 @@ from generator.crv_generator import CRVGenerator
 from generator.text_generator import TextGenerator
 
 from retrieve.cosine_similarity import CRVRetriever
+from retrieve.dnc import DNMemory
 from utils import set_seed, logger
 from utils.loading_model import CustomTransformerLoader
 
-from rich import print, rule
+from rich import print
+from rich.console import Console
+
+console = Console()
 
 logger = logger()
-
-
-class DNMemory(nn.Module):
-    def __init__(self, input_size, memory_size, word_size, num_reads, num_writes):
-        super(DNMemory, self).__init__()
-        self.input_size = input_size
-        self.memory_size = memory_size
-        self.word_size = word_size
-        self.num_reads = num_reads
-        self.num_writes = num_writes
-
-        # Initialize memory
-        self.memory = nn.Parameter(torch.zeros(memory_size, word_size))
-
-        # Read and write heads
-        self.read_heads = nn.ModuleList([ReadHead(word_size) for _ in range(num_reads)])
-        self.write_heads = nn.ModuleList(
-            [WriteHead(word_size) for _ in range(num_writes)]
-        )
-
-        # Controller
-        self.controller = nn.LSTM(input_size + num_reads * word_size, 256, num_layers=1)
-
-        # Output layer
-        self.output = nn.Linear(256 + num_reads * word_size, input_size)
-
-    def forward(self, x, prev_state=None):
-        batch_size = x.size(0)
-        if prev_state is None:
-            prev_state = self.init_state(batch_size)
-
-        controller_state, prev_reads = prev_state
-
-        # Read from memory
-        reads = [head(self.memory) for head in self.read_heads]
-        read_vectors = torch.cat(reads, dim=1)
-
-        # Controller input
-        controller_input = torch.cat([x, read_vectors], dim=1)
-        controller_output, controller_state = self.controller(
-            controller_input.unsqueeze(0), controller_state
-        )
-        controller_output = controller_output.squeeze(0)
-
-        # Write to memory
-        for head in self.write_heads:
-            self.memory = head(self.memory, controller_output)
-
-        # Output
-        output = self.output(torch.cat([controller_output, read_vectors], dim=1))
-
-        return output, (controller_state, reads)
-
-    def init_state(self, batch_size):
-        controller_state = (
-            torch.zeros(1, batch_size, 256),
-            torch.zeros(1, batch_size, 256),
-        )
-        reads = [torch.zeros(batch_size, self.word_size) for _ in range(self.num_reads)]
-        return (controller_state, reads)
-
-
-class ReadHead(nn.Module):
-    def __init__(self, word_size):
-        super(ReadHead, self).__init__()
-        self.word_size = word_size
-        self.attention = nn.Linear(word_size, 1)
-
-    def forward(self, memory):
-        attention = F.softmax(self.attention(memory), dim=0)
-        read_vector = torch.sum(attention * memory, dim=0)
-        return read_vector
-
-
-class WriteHead(nn.Module):
-    def __init__(self, word_size):
-        super(WriteHead, self).__init__()
-        self.word_size = word_size
-        self.erase_vector = nn.Linear(word_size, word_size)
-        self.write_vector = nn.Linear(word_size, word_size)
-        self.attention = nn.Linear(word_size, 1)
-
-    def forward(self, memory, controller_output):
-        attention = F.softmax(self.attention(memory), dim=0)
-        erase = torch.sigmoid(self.erase_vector(controller_output))
-        write = self.write_vector(controller_output)
-        memory = memory * (1 - attention * erase) + attention * write
-        return memory
 
 
 # Usage with CRVs
@@ -138,6 +51,7 @@ def main():
     config = AutoConfig.from_pretrained(model_path, use_auth_token=hf_token)
 
     console.rule("[bold red]Loading the Model")
+
     loader = CustomTransformerLoader()
 
     model, tokenizer = loader.load_model(
@@ -187,6 +101,7 @@ def main():
         Solution"""
     # query = """Rectilinear grid does not allow Sequences as inputs ### Describe the bug, what's wrong, and what you expected. Rectilinear grid gives an error when `Sequence`s are passed in, but `ndarray` are ok. ### Steps to reproduce the bug. This doesn't work ```python import pyvista as pv pv.RectilinearGrid([0, 1], [0, 1], [0, 1]) ``` This works ```py import pyvista as pv import numpy as np pv.RectilinearGrid(np.ndarray([0, 1]), np.ndarray([0, 1]), np.ndarray([0, 1])) ``` ### System Information ```shell -------------------------------------------------------------------------------- Date: Wed Apr 19 20:15:10 2023 UTC OS : Linux CPU(s) : 2 Machine : x86_64 Architecture : 64bit Environment : IPython GPU Vendor : Mesa/X.org GPU Renderer : llvmpipe (LLVM 11.0.1, 256 bits) GPU Version : 4.5 (Core Profile) Mesa 20.3.5 Python 3.11.2 (main, Mar 23 2023, 17:12:29) [GCC 10.2.1 20210110] pyvista : 0.38.5 vtk : 9.2.6 numpy : 1.24.2 imageio : 2.27.0 scooby : 0.7.1 pooch : v1.7.0 matplotlib : 3.7.1 IPython : 8.12.0 -------------------------------------------------------------------------------- ``` ### Screenshots _No response_"""
     # query = """write a python code to print hello world."""
+    query = """Provide relevant context to solve the following programming problem: obtains the id of an object and returns it as a string . if cancreate is true it will try to create a new id for the object if it has none . concode_field_sep Logger LOG concode_elem_sep Class MYCLASS concode_elem_sep String id concode_field_sep String readObjectID concode_elem_sep String createObjectID concode_elem_sep String generateID concode_elem_sep String toString. Relevant context:"""
 
     console.rule("[bold red]Retrieving the best CRV")
 
@@ -199,7 +114,10 @@ def main():
     print("data loaded")
 
     # best_crv = retriever(query, crvs_file)
-    best_crv, best_seq_length = retriever(query, crvs_file)
+    best_crv, best_seq_length, similarities = retriever(query, crvs_file)
+
+    # todo: not that we have the similarities, based on them, create a new router to decide which contexts to append
+
     print("best_crv.shape: ", best_crv.shape)
     print("best_seq_length: ", best_seq_length)
 
@@ -214,7 +132,7 @@ def main():
     console.rule(f"[bold red]Concat the CRV and the hidden state at layer {layer_idx}")
 
     memory_manager.set_concat_positions(0, start_pos=0, end_pos=best_seq_length)
-    memory_manager.apply_memory_to_model(0)
+    # memory_manager.apply_memory_to_model(0)
 
     # Set the CRV in the model (e.g., integrate at layer 1)
     # model.model.set_crv(sliced_best_crv, layer_idx=5, crv_layers=crv_layers)

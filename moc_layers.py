@@ -943,6 +943,7 @@ class LlamaSdpaAttention(LlamaAttention):
                 "`position_embeddings` (Tuple of tensors, containing cos and sin). In v4.45 `position_ids` will be "
                 "removed and `position_embeddings` will be mandatory."
             )
+            # start modification
             if not position_ids.shape[1] == seq_len:
                 # print(
                 #     "position_ids.shape, value_states.shape, position_embeddings.shape: ",
@@ -961,6 +962,7 @@ class LlamaSdpaAttention(LlamaAttention):
                 #     value_states.shape,
                 # )
             cos, sin = self.rotary_emb(value_states, position_ids)
+            # end modification
         else:
             # print(
             #     "position_ids.shape, value_states.shape, position_embeddings.shape: ",
@@ -1339,7 +1341,8 @@ class LlamaModel(LlamaPreTrainedModel):
         self.crv_layers = crv_layers
         self.crv_start_pos = start_pos
         self.crv_end_pos = end_pos
-
+        # set this flag back to false so it can append the input crv
+        self.is_crv_concatenated = False
         print(f"Set CRV with shape {crv.shape} at layer {layer_idx}")
         print(f"CRV layers: {crv_layers}")
         print(f"Concat positions: start={start_pos}, end={end_pos}")
@@ -1479,6 +1482,7 @@ class LlamaModel(LlamaPreTrainedModel):
 
                     hidden_states = self.integrate_crv(hidden_states, layer_idx)
 
+                # print(f"hidden_states shape at {layer_idx}", hidden_states.shape)
                 # end modify
                 layer_outputs = decoder_layer(
                     hidden_states,
@@ -1540,7 +1544,6 @@ class LlamaModel(LlamaPreTrainedModel):
         print(
             f"hidden states before cat at layer {layer_idx}: ",
             hidden_states.shape,
-            hidden_states[0][0],
         )
         # hidden_states = torch.cat([hidden_states, self.layer_crv[:, :50, :]], dim=1)
         if self.post_concat:

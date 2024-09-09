@@ -44,6 +44,9 @@ class CustomTransformerLoader:
             # load_in_8bit=load_in_8bit,
             # torch_dtype=torch.float16,
         )
+
+        # Set pad_token_id to eos_token_id
+        self.model.model.config.pad_token_id = self.model.model.config.eos_token_id
         self.model.eval()  # Set the model to evaluation mode
 
         return self.model, self.tokenizer

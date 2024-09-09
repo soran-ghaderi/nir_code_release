@@ -57,7 +57,7 @@ class CRVRetriever:
         self, inputs, output_file="data/new_stack.pt"
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         query_crv, query_seq_length = self.crv_generator.generate_crvs(
-            inputs, crv_layers=self.crv_layers
+            inputs, crv_layers=self.crv_layers, max_length=self.max_length
         )
         self.logger.info(f"Generated query CRV shape: {query_crv.shape}")
         self.logger.info(f"Generated query sequence length: {query_seq_length}")

@@ -6,8 +6,7 @@ from generator.crv_generator import CRVGenerator
 from generator.text_generator import TextGenerator
 
 from retrieve.cosine_similarity import CRVRetriever
-from retrieve.dnc import DNMemory
-from utils import set_seed, logger
+from utils import logger
 from utils.loading_model import CustomTransformerLoader
 
 from rich import print
@@ -19,27 +18,10 @@ logger = logger()
 
 
 # Usage with CRVs
-class CRVMemoryManager:
-    def __init__(self, crv_size, memory_size=100, num_reads=4, num_writes=1):
-        self.dnc = DNMemory(crv_size, memory_size, crv_size, num_reads, num_writes)
-        self.state = None
-
-    def save_crv(self, crv):
-        output, self.state = self.dnc(crv, self.state)
-        return output
-
-    def retrieve_best_crv(self, query_crv):
-        output, self.state = self.dnc(query_crv, self.state)
-        return output
-
-
-from rich.console import Console
-
-
 def main():
     console = Console()
     seed = 42
-    set_seed(seed)
+    # set_seed(seed)
 
     model_urls = {
         "llama31": "meta-llama/Meta-Llama-3.1-8B-Instruct",
@@ -100,9 +82,17 @@ def main():
     query = """Problem: James dumps his whole collection of 500 Legos on the floor and starts building a castle out of them.  He uses half the pieces before finishing and is told to put the rest away.  He puts all of the leftover pieces back in the box they came from, except for 5 missing pieces that he can't find.  How many Legos are in the box at the end?
         Solution"""
     # query = """Rectilinear grid does not allow Sequences as inputs ### Describe the bug, what's wrong, and what you expected. Rectilinear grid gives an error when `Sequence`s are passed in, but `ndarray` are ok. ### Steps to reproduce the bug. This doesn't work ```python import pyvista as pv pv.RectilinearGrid([0, 1], [0, 1], [0, 1]) ``` This works ```py import pyvista as pv import numpy as np pv.RectilinearGrid(np.ndarray([0, 1]), np.ndarray([0, 1]), np.ndarray([0, 1])) ``` ### System Information ```shell -------------------------------------------------------------------------------- Date: Wed Apr 19 20:15:10 2023 UTC OS : Linux CPU(s) : 2 Machine : x86_64 Architecture : 64bit Environment : IPython GPU Vendor : Mesa/X.org GPU Renderer : llvmpipe (LLVM 11.0.1, 256 bits) GPU Version : 4.5 (Core Profile) Mesa 20.3.5 Python 3.11.2 (main, Mar 23 2023, 17:12:29) [GCC 10.2.1 20210110] pyvista : 0.38.5 vtk : 9.2.6 numpy : 1.24.2 imageio : 2.27.0 scooby : 0.7.1 pooch : v1.7.0 matplotlib : 3.7.1 IPython : 8.12.0 -------------------------------------------------------------------------------- ``` ### Screenshots _No response_"""
-    # query = """write a python code to print hello world."""
+    query = (
+        """ write a python code to print the previous text about the stack of books."""
+    )
     query = """Provide relevant context to solve the following programming problem: obtains the id of an object and returns it as a string . if cancreate is true it will try to create a new id for the object if it has none . concode_field_sep Logger LOG concode_elem_sep Class MYCLASS concode_elem_sep String id concode_field_sep String readObjectID concode_elem_sep String createObjectID concode_elem_sep String generateID concode_elem_sep String toString. Relevant context:"""
-
+    query = """Provide relevant context to solve the following programming problem: obtains the id of an object and returns it as a string . if cancreate is true it will try to create a new id for the object if it has none . concode_field_sep Logger LOG concode_elem_sep Class MYCLASS concode_elem_sep String id concode_field_sep String readObjectID concode_elem_sep String createObjectID concode_elem_sep String generateID concode_elem_sep String toString. Relevant context:"""
+    query = """Provide relevant context to solve the following programming problem: obtains the id of an object and returns it as a string . if cancreate is true it will try to create a new id for the object if it has none . concode_field_sep Logger LOG concode_elem_sep Class MYCLASS concode_elem_sep String id concode_field_sep String readObjectID concode_elem_sep String createObjectID concode_elem_sep String generateID concode_elem_sep String toString. Relevant context:"""
+    query = """Provide relevant context to solve the following programming problem: obtains the id of an object and returns it as a string . if cancreate is true it will try to create a new id for the object if it has none . concode_field_sep Logger LOG concode_elem_sep Class MYCLASS concode_elem_sep String id concode_field_sep String readObjectID concode_elem_sep String createObjectID concode_elem_sep String generateID concode_elem_sep String toString. Relevant context:"""
+    query = """
+def is_palindrome(string: str):
+    # Check if string is a palindrone.
+"""
     console.rule("[bold red]Retrieving the best CRV")
 
     memory_manager = MemoryManager(model, max_memories=5)
@@ -124,6 +114,18 @@ def main():
     sliced_best_crv = best_crv[:, :best_seq_length, :]
     print("sliced_best_crv.shape: ", sliced_best_crv.shape)
 
+    # Set the CRV in the model (e.g., integrate at layer 1)
+    # model.model.set_crv(sliced_best_crv, layer_idx=5, crv_layers=crv_layers)
+    # model.model.set_post_concat_crv(True)
+
+    console.rule(f"[bold red]Generating the outputs")
+
+    query = "Write a Python function to find the longest common substring between two strings."
+    context = "To find the longest common substring, you can use dynamic programming. Create a 2D table where each cell (i, j) represents the length of the common substring ending at s1[i-1] and s2[j-1]. Fill the table and keep track of the maximum length and its ending position. Time complexity: O(m*n), where m and n are the lengths of the strings."
+    best_crv, best_seq_length = crv_generator.generate_crvs(
+        context, crv_layers=crv_layers, max_length=configs.MAX_LENGTH
+    )
+
     layer_idx = 10
     memory_manager.add_memory(
         best_crv, best_seq_length, layer_idx=layer_idx, crv_layers=crv_layers
@@ -132,18 +134,17 @@ def main():
     console.rule(f"[bold red]Concat the CRV and the hidden state at layer {layer_idx}")
 
     memory_manager.set_concat_positions(0, start_pos=0, end_pos=best_seq_length)
-    # memory_manager.apply_memory_to_model(0)
-
-    # Set the CRV in the model (e.g., integrate at layer 1)
-    # model.model.set_crv(sliced_best_crv, layer_idx=5, crv_layers=crv_layers)
-    # model.model.set_post_concat_crv(True)
-
-    console.rule(f"[bold red]Generating the outputs")
-
-    text_generator = TextGenerator(model, tokenizer)
+    memory_manager.apply_memory_to_model(0)
+    text_generator = TextGenerator(model, tokenizer, seed=None)
     generated_text = text_generator.generate_text(
         query,
-        max_new_tokens=500,
+        max_new_tokens=300,
+        num_return_sequences=1,
+        temperature=0.9,
+        top_k=None,
+        top_p=None,
+        min_p=0.05,
+        repetition_penalty=0.87,
         output_file="data/results.csv",
         stop_sequences=["The end", ".\n\n"],
     )

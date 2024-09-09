@@ -89,3 +89,17 @@ class WriteHead(nn.Module):
         write = self.write_vector(controller_output)
         memory = memory * (1 - attention * erase) + attention * write
         return memory
+
+
+class CRVMemoryManager:
+    def __init__(self, crv_size, memory_size=100, num_reads=4, num_writes=1):
+        self.dnc = DNMemory(crv_size, memory_size, crv_size, num_reads, num_writes)
+        self.state = None
+
+    def save_crv(self, crv):
+        output, self.state = self.dnc(crv, self.state)
+        return output
+
+    def retrieve_best_crv(self, query_crv):
+        output, self.state = self.dnc(query_crv, self.state)
+        return output

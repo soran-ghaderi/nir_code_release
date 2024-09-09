@@ -3,6 +3,7 @@ from typing import Union, Optional, List, Tuple
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+import configs
 from configs import SUBSET_SIZE
 from data_processor.data_loader import GSM8KDataset
 from utils import logger
@@ -32,6 +33,7 @@ class CRVGenerator:
         batch_size: int = 32,
         num_contexts: int = 1000,
         subset_size: int = None,
+        max_length: int = None,
         crv_save_batch: int = 10,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         self.set_seed(self.seed)
@@ -43,6 +45,7 @@ class CRVGenerator:
                 batch_size,
                 num_contexts,
                 subset_size,
+                max_length,
                 crv_save_batch,
                 inputs,
             )
@@ -58,13 +61,17 @@ class CRVGenerator:
         batch_size,
         num_contexts,
         subset_size,
+        max_length,
         crv_save_batch,
         dataset=None,
     ):
         if dataset is None:
             self.logger.info("'dataset' is None. Load GSM8K dataset.")
             dataset = GSM8KDataset(
-                self.tokenizer, split="train", subset_size=subset_size
+                self.tokenizer,
+                split="train",
+                subset_size=subset_size,
+                max_length=max_length,
             )
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 

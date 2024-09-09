@@ -80,8 +80,8 @@ class GSM8KDataset(Dataset):
         self,
         tokenizer,
         split="train",
-        max_length=MAX_LENGTH,
-        subset_size=SUBSET_SIZE,
+        max_length=configs.MAX_LENGTH,
+        subset_size=configs.SUBSET_SIZE,
         seed=42,
     ):
         self.dataset = load_dataset("gsm8k", "main", split=split)

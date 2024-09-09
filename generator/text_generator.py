@@ -33,7 +33,7 @@ class CustomStoppingCriteria(StoppingCriteria):
 
 
 class TextGenerator:
-    def __init__(self, model, tokenizer, seed=42):
+    def __init__(self, model, tokenizer, seed=None):
         self.model = model
         self.tokenizer = tokenizer
         self.seed = seed
@@ -56,6 +56,12 @@ class TextGenerator:
         temperature: float = 0.8,
         top_k: int = 50,
         top_p: float = 0.95,
+        min_p: float = 0.05,
+        dry_run=True,
+        dry_multiplier=0.8,
+        dry_base=0.1,
+        dry_allowed_length=32,
+        dry_sequence_breakers='"\\n", ":", "\\"", "*"',
         repetition_penalty: float = 1.2,
         no_repeat_ngram_size: int = 1,
         crv_layer_idx: Optional[Union[int, list]] = None,
@@ -79,7 +85,8 @@ class TextGenerator:
         :param output_file: File to write results (if provided)
         :return: Generated text or list of generated texts
         """
-        self.set_seed(self.seed)
+        if not self.seed is None:
+            self.set_seed(self.seed)
         input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(
             self.model.device
         )
@@ -98,12 +105,18 @@ class TextGenerator:
             "max_length": max_length,
             "max_new_tokens": max_new_tokens,
             "temperature": temperature,
-            "top_k": top_k,
-            "top_p": top_p,
+            # "top_k": top_k,
+            # "top_p": top_p,
+            # "min_p": min_p,
+            # "dry_run": dry_run,
+            # "dry_multiplier": dry_multiplier,
+            # "dry_base": dry_base,
+            # "dry_allowed_length": dry_allowed_length,
+            # "dry_sequence_breakers": dry_sequence_breakers,
             "do_sample": True,
             "num_return_sequences": num_return_sequences,
-            "repetition_penalty": repetition_penalty,
-            "no_repeat_ngram_size": no_repeat_ngram_size,
+            # "repetition_penalty": repetition_penalty,
+            # "no_repeat_ngram_size": no_repeat_ngram_size,
             "streamer": self.streamer,
             "stopping_criteria": stopping_criteria,
         }

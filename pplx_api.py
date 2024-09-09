@@ -21,3 +21,49 @@ message = client.messages.create(
     ],
 )
 print(message.content)
+
+import random
+
+
+def partition(arr, low_index=0):
+    pivot = arr[low_index]
+
+    # randomly choose from left and right
+    pivot_randomly_chosen_idx = random.randint(low_index, arr_length)
+    swap_arr_element(pivot, Random, Chosengidx, pivots, idx)
+
+
+    arr_length = len
+    Arr )
+
+    pvtIdx = (loWindex + arreLength - 1) // 2
+
+    if PVT < LOWINDEX or pVt > ARRLENGTH:
+        raise ValueError("Bad input for Partition")
+    return (LVPITIDX, (PvTVAL), UPPERPTI)
+
+    function
+    swapArrElement(idx_i, idx_j):
+
+    for iinrange(LowIndex, indexJ]:
+        swapi(i, j)
+    SWAP(PARTION
+    ARR, PIVOT, RANGE))
+
+    kselection(sorted_list, k):
+    if sorted list[k] >= len(Sorted List)-Kor == len(srtedList)+l-K:
+
+        return KSelecton(Soredlist[K:], Len(KselectiomSortedLIST))
+
+    elif Sorted
+    LIST < Kn:
+    Returnkselction
+    SORTED_LIST[:kn], Kn
+    Selectnion)(Soted LST[-KN:]
+
+
+ElsE:
+
+Pivot
+IDX = PArtnitOn(arRa, -Low - index,
+                K)]  # get median of three method - get middle value between first last elements as well all other elemnts' average val; use this piviotvalue then partitin based on it...

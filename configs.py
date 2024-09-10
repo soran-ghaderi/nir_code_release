@@ -12,4 +12,4 @@ CRV_LAYERS = [
     20,
     32,
 ]  # the hidden states include the input embedding layer therefore idx 0 is the embeds lyr
-USE_RICH = True
+USE_RICH = False

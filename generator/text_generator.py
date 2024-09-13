@@ -1,12 +1,39 @@
 import csv
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 import torch
-from transformers import TextStreamer
+from transformers import TextStreamer, StoppingCriteria, StoppingCriteriaList
+from utils import logger
+
+from rich import print
+from rich.logging import RichHandler
+
+import configs
+
+from rich.panel import Panel
+
+logger = logger()
+
+
+class CustomStoppingCriteria(StoppingCriteria):
+    def __init__(self, tokenizer, stops=None, encounters=1):
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.stops = stops or []
+        self.encounters = encounters
+        self.count = 0
+
+    def __call__(self, input_ids, scores, **kwargs):
+        decoded = self.tokenizer.decode(input_ids[0][-1:])
+        if any(stop in decoded for stop in self.stops):
+            self.count += 1
+            if self.count >= self.encounters:
+                return True
+        return False
 
 
 class TextGenerator:
-    def __init__(self, model, tokenizer, seed=42):
+    def __init__(self, model, tokenizer, seed=None):
         self.model = model
         self.tokenizer = tokenizer
         self.seed = seed
@@ -29,10 +56,18 @@ class TextGenerator:
         temperature: float = 0.8,
         top_k: int = 50,
         top_p: float = 0.95,
+        min_p: float = 0.05,
+        dry_run=True,
+        dry_multiplier=0.8,
+        dry_base=0.1,
+        dry_allowed_length=32,
+        dry_sequence_breakers='"\\n", ":", "\\"", "*"',
         repetition_penalty: float = 1.2,
         no_repeat_ngram_size: int = 1,
         crv_layer_idx: Optional[Union[int, list]] = None,
         output_file: Optional[str] = None,
+        use_eos_token: bool = True,
+        stop_sequences: Optional[List[str]] = None,
     ) -> Union[str, list]:
         """
         Generate text based on the given prompt and parameters.
@@ -50,24 +85,45 @@ class TextGenerator:
         :param output_file: File to write results (if provided)
         :return: Generated text or list of generated texts
         """
-        self.set_seed(self.seed)
+        if not self.seed is None:
+            self.set_seed(self.seed)
         input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(
             self.model.device
         )
 
+        def update_display(text):
+            return Panel(text, title="Generated Text", border_style="cyan")
+
+        if stop_sequences:
+            stopping_criteria = StoppingCriteriaList(
+                [CustomStoppingCriteria(tokenizer=self.tokenizer, stops=stop_sequences)]
+            )
+        else:
+            stopping_criteria = None
         generate_kwargs = {
             "input_ids": input_ids,
             "max_length": max_length,
             "max_new_tokens": max_new_tokens,
             "temperature": temperature,
-            "top_k": top_k,
-            "top_p": top_p,
+            # "top_k": top_k,
+            # "top_p": top_p,
+            # "min_p": min_p,
+            # "dry_run": dry_run,
+            # "dry_multiplier": dry_multiplier,
+            # "dry_base": dry_base,
+            # "dry_allowed_length": dry_allowed_length,
+            # "dry_sequence_breakers": dry_sequence_breakers,
             "do_sample": True,
             "num_return_sequences": num_return_sequences,
-            "repetition_penalty": repetition_penalty,
-            "no_repeat_ngram_size": no_repeat_ngram_size,
+            # "repetition_penalty": repetition_penalty,
+            # "no_repeat_ngram_size": no_repeat_ngram_size,
             "streamer": self.streamer,
+            "stopping_criteria": stopping_criteria,
         }
+
+        eos_token_id = self.tokenizer.eos_token_id
+        if use_eos_token:
+            generate_kwargs["eos_token_id"] = eos_token_id
 
         if crv_layer_idx is not None:
             print(f"Concatenate at layer {crv_layer_idx}:")

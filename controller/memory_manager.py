@@ -68,7 +68,7 @@ class MemoryManager:
         """
         memory = self.get_memory(memory_idx)
         if memory:
-            self.model.set_crv(
+            self.model.model.set_crv(
                 memory["crv"],
                 memory["layer_idx"],
                 memory["crv_layers"],

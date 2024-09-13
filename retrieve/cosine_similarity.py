@@ -57,7 +57,7 @@ class CRVRetriever:
         self, inputs, output_file="data/new_stack.pt"
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         query_crv, query_seq_length = self.crv_generator.generate_crvs(
-            inputs, crv_layers=self.crv_layers
+            inputs, crv_layers=self.crv_layers, max_length=self.max_length
         )
         self.logger.info(f"Generated query CRV shape: {query_crv.shape}")
         self.logger.info(f"Generated query sequence length: {query_seq_length}")
@@ -104,7 +104,7 @@ class CRVRetriever:
         best_crv_index = best_indices[0].item()
         self.logger.info(f"Best CRV index: {best_crv_index}")
 
-        return crvs[best_crv_index], seq_lengths[best_crv_index]
+        return crvs[best_crv_index], seq_lengths[best_crv_index], similarities
 
     def __call__(
         self, query: str, crvs_file: Union[str, Dict[str, torch.Tensor]]

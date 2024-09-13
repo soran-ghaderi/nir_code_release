@@ -2,11 +2,16 @@ import random
 
 import torch
 from datasets import load_dataset
+from rich.logging import RichHandler
 from torch.utils.data import Dataset
 
+import configs
 from configs import MAX_LENGTH, SUBSET_SIZE
 
 from utils import set_seed, logger
+from rich import print
+from rich.logging import RichHandler
+
 
 logger = logger()
 
@@ -75,8 +80,8 @@ class GSM8KDataset(Dataset):
         self,
         tokenizer,
         split="train",
-        max_length=MAX_LENGTH,
-        subset_size=SUBSET_SIZE,
+        max_length=configs.MAX_LENGTH,
+        subset_size=configs.SUBSET_SIZE,
         seed=42,
     ):
         self.dataset = load_dataset("gsm8k", "main", split=split)

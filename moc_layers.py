@@ -36,7 +36,11 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 
-logger = logging.get_logger(__name__)
+from rich import print
+from utils import set_seed, logger
+
+logger = logger()
+# logger = logging.get_logger(__name__)
 _CONFIG_FOR_DOC = "LlamaConfig"
 
 
@@ -939,6 +943,7 @@ class LlamaSdpaAttention(LlamaAttention):
                 "`position_embeddings` (Tuple of tensors, containing cos and sin). In v4.45 `position_ids` will be "
                 "removed and `position_embeddings` will be mandatory."
             )
+            # start modification
             if not position_ids.shape[1] == seq_len:
                 # print(
                 #     "position_ids.shape, value_states.shape, position_embeddings.shape: ",
@@ -957,6 +962,7 @@ class LlamaSdpaAttention(LlamaAttention):
                 #     value_states.shape,
                 # )
             cos, sin = self.rotary_emb(value_states, position_ids)
+            # end modification
         else:
             # print(
             #     "position_ids.shape, value_states.shape, position_embeddings.shape: ",
@@ -1288,7 +1294,6 @@ class LlamaModel(LlamaPreTrainedModel):
         self,
         config: LlamaConfig,
         layers_to_concat: list = [],
-        concat_crv_to_h: bool = True,
     ):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
@@ -1311,25 +1316,36 @@ class LlamaModel(LlamaPreTrainedModel):
         self.post_init()
 
         self.layers_to_concat = layers_to_concat
-        self.allow_concat = concat_crv_to_h
         self.is_crv_concatenated = False
-        if self.allow_concat:
-            filename = "data/crvs.pt"
-            self.loaded_crvs = torch.load(filename)
-            # print("loaded crvs from moc layer: ", len(loaded_crvs), loaded_crvs.shape)
 
-            # print("self.layer_crv.shape: ", self.layer_crv.shape)
+        # print("self.layer_crv.shape: ", self.layer_crv.shape)
         self.crv = None
         self.crv_layer_idx = None
         self.crv_layers = None
         self.post_concat = False
+        self.crv_start_pos = None
+        self.crv_end_pos = None
 
     # new method
 
-    def set_crv(self, crv, layer_idx, crv_layers):
+    def set_crv(
+        self,
+        crv,
+        layer_idx,
+        crv_layers,
+        start_pos: Optional[int] = None,
+        end_pos: Optional[int] = None,
+    ):
         self.crv = crv
         self.crv_layer_idx = layer_idx
         self.crv_layers = crv_layers
+        self.crv_start_pos = start_pos
+        self.crv_end_pos = end_pos
+        # set this flag back to false so it can append the input crv
+        self.is_crv_concatenated = False
+        print(f"Set CRV with shape {crv.shape} at layer {layer_idx}")
+        print(f"CRV layers: {crv_layers}")
+        print(f"Concat positions: start={start_pos}, end={end_pos}")
 
     def set_post_concat_crv(self, post_concat: bool = True):
         self.post_concat = post_concat
@@ -1457,53 +1473,16 @@ class LlamaModel(LlamaPreTrainedModel):
                 )
             else:
 
-                # start modify
-                # print(
-                #     "self.concat_crv_to_h and not self.is_crv_concatenated and layer_idx == self.crv_layer_idx: ",
-                #     self.concat_crv_to_h,
-                #     not self.is_crv_concatenated,
-                #     layer_idx,
-                #     self.crv_layer_idx,
-                # )
+                # Concat crvs?
                 if (
-                    self.allow_concat
-                    and not self.is_crv_concatenated
+                    # self.allow_concat
+                    not self.is_crv_concatenated
                     and layer_idx == self.crv_layer_idx
                 ):
 
-                    # self.layer_crv = self.crv[layer_idx + 15] # this works fine and is quite interesting -> explore added depth to the model
-                    self.layer_crv = self.crv[
-                        self.crv_layers.index(layer_idx)
-                    ]  # first find the the index of
-                    # layer_idx in the crv_layers, then retrive the value of that index in the self.crv
-                    self.layer_crv = self.layer_crv.unsqueeze(
-                        0
-                    )  # Add a dimension at index 0
-                    print("shape of the new layer_crv: ", self.layer_crv.shape)
-                    print(
-                        "cat al layers (saved layers idx, and model idx): ",
-                        self.crv_layers.index(layer_idx),
-                        layer_idx,
-                    )
-                    # print("concating ... ")
-                    self.layer_crv = self.layer_crv.to(hidden_states.device)
-                    print(
-                        f"hidden states before cat at layer {layer_idx}: ",
-                        hidden_states.shape,
-                        hidden_states[0][0],
-                    )
-                    # hidden_states = torch.cat([hidden_states, self.layer_crv[:, :50, :]], dim=1)
-                    if self.post_concat:
-                        hidden_states = torch.cat(
-                            [hidden_states, self.layer_crv], dim=1
-                        )
-                    else:
-                        hidden_states = torch.cat(
-                            [self.layer_crv, hidden_states], dim=1
-                        )
-                    print("hidden states after cat: ", hidden_states.shape)
-                    self.is_crv_concatenated = True
+                    hidden_states = self.integrate_crv(hidden_states, layer_idx)
 
+                # print(f"hidden_states shape at {layer_idx}", hidden_states.shape)
                 # end modify
                 layer_outputs = decoder_layer(
                     hidden_states,
@@ -1546,6 +1525,34 @@ class LlamaModel(LlamaPreTrainedModel):
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
         )
+
+    def integrate_crv(self, hidden_states, layer_idx):
+        # self.layer_crv = self.crv[layer_idx + 15] # this works fine and is quite interesting -> explore added depth to the model
+        self.layer_crv = self.crv[
+            self.crv_layers.index(layer_idx)
+        ]  # first find the the index of
+        # layer_idx in the crv_layers, then retrive the value of that index in the self.crv
+        self.layer_crv = self.layer_crv.unsqueeze(0)  # Add a dimension at index 0
+        print("shape of the new layer_crv: ", self.layer_crv.shape)
+        print(
+            "cat al layers (saved layers idx, and model idx): ",
+            self.crv_layers.index(layer_idx),
+            layer_idx,
+        )
+        # print("concating ... ")
+        self.layer_crv = self.layer_crv.to(hidden_states.device)
+        print(
+            f"hidden states before cat at layer {layer_idx}: ",
+            hidden_states.shape,
+        )
+        # hidden_states = torch.cat([hidden_states, self.layer_crv[:, :50, :]], dim=1)
+        if self.post_concat:
+            hidden_states = torch.cat([hidden_states, self.layer_crv], dim=1)
+        else:
+            hidden_states = torch.cat([self.layer_crv, hidden_states], dim=1)
+        print("hidden states after cat: ", hidden_states.shape)
+        self.is_crv_concatenated = True
+        return hidden_states
 
     def _update_causal_mask(
         self,
@@ -1630,11 +1637,9 @@ class LlamaModel(LlamaPreTrainedModel):
 class LlamaForCausalLM(LlamaPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, config, layers_to_concat=[], concat_crv_to_h=True):
+    def __init__(self, config, layers_to_concat=[]):
         super().__init__(config)
-        self.model = LlamaModel(
-            config, layers_to_concat=layers_to_concat, concat_crv_to_h=concat_crv_to_h
-        )
+        self.model = LlamaModel(config, layers_to_concat=layers_to_concat)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         print("config: ", config)

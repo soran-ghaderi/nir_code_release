@@ -1,28 +1,9 @@
-import logging
-import random
 from typing import Optional, Tuple
 
-import numpy as np
 import torch
 from transformers import AutoTokenizer
 
 from moc_layers import LlamaForCausalLM
-
-
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-
-
-def logger():
-    logger = logging.getLogger(__name__)
-    logging.basicConfig(level=logging.INFO)
-    return logger
 
 
 class CustomTransformerLoader:
@@ -63,6 +44,9 @@ class CustomTransformerLoader:
             # load_in_8bit=load_in_8bit,
             # torch_dtype=torch.float16,
         )
+
+        # Set pad_token_id to eos_token_id
+        self.model.model.config.pad_token_id = self.model.model.config.eos_token_id
         self.model.eval()  # Set the model to evaluation mode
 
         return self.model, self.tokenizer

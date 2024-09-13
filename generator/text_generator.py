@@ -117,7 +117,7 @@ class TextGenerator:
             "num_return_sequences": num_return_sequences,
             # "repetition_penalty": repetition_penalty,
             # "no_repeat_ngram_size": no_repeat_ngram_size,
-            # "streamer": self.streamer,
+            "streamer": self.streamer,
             "stopping_criteria": stopping_criteria,
         }
 

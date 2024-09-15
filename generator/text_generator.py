@@ -33,13 +33,12 @@ class CustomStoppingCriteria(StoppingCriteria):
 
 
 class TextGenerator:
-    def __init__(self, model, tokenizer, seed=None):
+    def __init__(self, model, tokenizer, seed=None, device=None, streamer=None):
         self.model = model
         self.tokenizer = tokenizer
         self.seed = seed
-        self.streamer = TextStreamer(
-            tokenizer, skip_special_tokens=True, skip_prompt=True
-        )
+        self.streamer = streamer
+        self.device = device
 
     @staticmethod
     def set_seed(seed):
@@ -87,9 +86,15 @@ class TextGenerator:
         """
         if not self.seed is None:
             self.set_seed(self.seed)
-        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(
-            self.model.device
-        )
+
+        if not self.device is None:
+            input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(
+                self.device
+            )
+        else:
+            input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(
+                self.model.device
+            )
 
         def update_display(text):
             return Panel(text, title="Generated Text", border_style="cyan")
@@ -154,3 +159,33 @@ class TextGenerator:
             writer.writerow(
                 [prompt] + results + [f"{k}={v}" for k, v in kwargs.items()]
             )
+
+    def generate_text_batch(self, prompts: List[str], **kwargs):
+        if not self.seed is None:
+            self.set_seed(self.seed)
+
+        input_ids = self.tokenizer(
+            prompts, return_tensors="pt", padding=True, truncation=True
+        ).to(self.device)
+
+        generate_kwargs = {
+            "input_ids": input_ids.input_ids,
+            "attention_mask": input_ids.attention_mask,
+            "max_length": kwargs.get("max_length", 50),
+            "max_new_tokens": kwargs.get("max_new_tokens", 100),
+            "temperature": kwargs.get("temperature", 0.8),
+            "do_sample": kwargs.get("do_sample", True),
+            "num_return_sequences": 1,
+        }
+
+        with torch.no_grad():
+            outputs = self.model.generate(**generate_kwargs)
+
+        generated_texts = [
+            self.tokenizer.decode(
+                output[input_ids.input_ids.shape[1] :], skip_special_tokens=True
+            )
+            for output in outputs
+        ]
+
+        return generated_texts

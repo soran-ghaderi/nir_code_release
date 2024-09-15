@@ -1,4 +1,4 @@
-MAX_LENGTH = 128
+MAX_LENGTH = 512
 # BATCH_SIZE = 5
 # NUM_CONTEXTS = 10
 CRV_DIM = 4096  # LLaMA hidden size -> should derive it from the model configs

@@ -1,7 +1,7 @@
 import random
 
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from rich.logging import RichHandler
 from torch.utils.data import Dataset
 
@@ -55,6 +55,7 @@ class MathDataset(Dataset):
             #     return_tensors="pt",
             # )
             print(f"dataset input {idx}: ", len(input_text), input_text, "\n\n")
+
             encoded = self.tokenizer(
                 input_text,
                 max_length=self.max_length,
@@ -130,3 +131,35 @@ class GSM8KDataset(Dataset):
                 "input_ids": torch.zeros(self.max_length, dtype=torch.long),
                 "attention_mask": torch.zeros(self.max_length, dtype=torch.long),
             }
+
+
+class MBPPDataset(Dataset):
+    def __init__(self, dataset, num_examples=-1):
+        self.dataset = dataset
+        self.num_examples = num_examples if num_examples != -1 else len(dataset)
+
+    def __len__(self):
+        return self.num_examples
+
+    def __getitem__(self, idx):
+        if idx >= self.num_examples:
+            raise IndexError("Index out of bounds")
+
+        instance = self.dataset[idx]
+        print(f"Accessing index {idx}, instance keys: {instance.keys()}")
+
+        return {
+            "id": idx,
+            "query": self._get_first_or_default(instance, "query", ""),
+            "context": self._get_first_or_default(instance, "context", ""),
+            "input_final_prompts": self._get_first_or_default(
+                instance, "input_final_prompts", ""
+            ),
+        }
+
+    @staticmethod
+    def _get_first_or_default(instance, key, default):
+        value = instance.get(key, default)
+        if isinstance(value, (list, tuple)) and len(value) > 0:
+            return value[0]
+        return value

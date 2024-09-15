@@ -1343,9 +1343,11 @@ class LlamaModel(LlamaPreTrainedModel):
         self.crv_end_pos = end_pos
         # set this flag back to false so it can append the input crv
         self.is_crv_concatenated = False
-        print(f"Set CRV with shape {crv.shape} at layer {layer_idx}")
-        print(f"CRV layers: {crv_layers}")
-        print(f"Concat positions: start={start_pos}, end={end_pos}")
+        logger.info(
+            f"Set CRV with shape {crv.shape} at layer {layer_idx}"
+            f"CRV layers: {crv_layers}"
+            f"Concat positions: start={start_pos}, end={end_pos}"
+        )
 
     def set_post_concat_crv(self, post_concat: bool = True):
         self.post_concat = post_concat
@@ -1532,25 +1534,27 @@ class LlamaModel(LlamaPreTrainedModel):
             self.crv_layers.index(layer_idx)
         ]  # first find the the index of
         # layer_idx in the crv_layers, then retrive the value of that index in the self.crv
+
         self.layer_crv = self.layer_crv.unsqueeze(0)  # Add a dimension at index 0
-        print("shape of the new layer_crv: ", self.layer_crv.shape)
-        print(
-            "cat al layers (saved layers idx, and model idx): ",
-            self.crv_layers.index(layer_idx),
-            layer_idx,
-        )
-        # print("concating ... ")
+
         self.layer_crv = self.layer_crv.to(hidden_states.device)
-        print(
-            f"hidden states before cat at layer {layer_idx}: ",
-            hidden_states.shape,
-        )
-        # hidden_states = torch.cat([hidden_states, self.layer_crv[:, :50, :]], dim=1)
+        original_h_shape = hidden_states.shape
         if self.post_concat:
             hidden_states = torch.cat([hidden_states, self.layer_crv], dim=1)
         else:
             hidden_states = torch.cat([self.layer_crv, hidden_states], dim=1)
-        print("hidden states after cat: ", hidden_states.shape)
+
+        new_h_shape = hidden_states.shape
+        logger.info(
+            f"concatenation layer index:"
+            f"\n\t\tspecified-layers list idx: {self.crv_layers.index(layer_idx)},"
+            f"\n\t\tmodel's hidden_states idx: {layer_idx}"
+            f"the shape of hidden states and the CRVs"
+            f"\nshape of the new layer_crv: {self.layer_crv.shape}"
+            f"\nbefore concatenation at layer {layer_idx}: {original_h_shape}"
+            f"\nafter concatenation at layer {layer_idx}: {new_h_shape}"
+        )
+
         self.is_crv_concatenated = True
         return hidden_states
 
@@ -1642,7 +1646,6 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         self.model = LlamaModel(config, layers_to_concat=layers_to_concat)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        # print("config: ", config)
         # Initialize weights and apply final processing
         self.post_init()
 

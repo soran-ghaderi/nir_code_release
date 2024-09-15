@@ -1642,7 +1642,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         self.model = LlamaModel(config, layers_to_concat=layers_to_concat)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        print("config: ", config)
+        # print("config: ", config)
         # Initialize weights and apply final processing
         self.post_init()
 

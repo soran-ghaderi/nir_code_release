@@ -24,9 +24,8 @@ def set_seed(seed):
 
 def logger():
     if configs.USE_RICH:
-
         logging.basicConfig(
-            level="INFO",
+            level=configs.logging_level,
             format="%(message)s",
             datefmt="[%X]",
             handlers=[RichHandler(rich_tracebacks=True)],
@@ -35,7 +34,7 @@ def logger():
     else:
 
         logger = logging.getLogger(__name__)
-        logging.basicConfig(level=logging.ERROR)
+        logging.basicConfig(level=configs.logging_level)
     return logger
 
 
@@ -58,7 +57,10 @@ def extract_test_cases(text):
 
     if current_group:
         grouped_tests.append(current_group)
-        print("test cases len: ", len(grouped_tests))
+        # print("test cases len: ", len(grouped_tests))
+        logger = logging.getLogger(__name__)
+        logging.basicConfig(level=logging.ERROR)
+        logger.info(f"test cases len: {len(grouped_tests)}")
 
     return grouped_tests
 

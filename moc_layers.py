@@ -1536,7 +1536,9 @@ class LlamaModel(LlamaPreTrainedModel):
         # layer_idx in the crv_layers, then retrive the value of that index in the self.crv
 
         self.layer_crv = self.layer_crv.unsqueeze(0)  # Add a dimension at index 0
-
+        # self.layer_crv = self.layer_crv.unsqueeze(0).expand(
+        #     hidden_states.shape[0], -1, -1
+        # )
         self.layer_crv = self.layer_crv.to(hidden_states.device)
         original_h_shape = hidden_states.shape
         if self.post_concat:

@@ -1,3 +1,5 @@
+import logging
+
 MAX_LENGTH = 512
 # BATCH_SIZE = 5
 # NUM_CONTEXTS = 10
@@ -13,3 +15,4 @@ CRV_LAYERS = [
     32,
 ]  # the hidden states include the input embedding layer therefore idx 0 is the embeds lyr
 USE_RICH = False
+logging_level = logging.ERROR

@@ -886,6 +886,7 @@ class LlamaSdpaAttention(LlamaAttention):
         position_embeddings: Optional[
             Tuple[torch.Tensor, torch.Tensor]
         ] = None,  # will become mandatory in v4.45
+        post_cat_attention_mask: Optional = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         if output_attentions:
@@ -894,6 +895,10 @@ class LlamaSdpaAttention(LlamaAttention):
                 "LlamaModel is using LlamaSdpaAttention, but `torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to the manual attention implementation, "
                 'but specifying the manual implementation will be required from Transformers version v5.0.0 onwards. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
             )
+            if post_cat_attention_mask is not None and not torch.equal(
+                attention_mask, post_cat_attention_mask
+            ):
+                attention_mask = post_cat_attention_mask
             return super().forward(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
@@ -1063,6 +1068,7 @@ class LlamaDecoderLayer(nn.Module):
         position_embeddings: Optional[
             Tuple[torch.Tensor, torch.Tensor]
         ] = None,  # will become mandatory in v4.45
+        post_cat_attention_mask: Optional = None,
         **kwargs,
     ) -> Tuple[
         torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
@@ -1104,6 +1110,7 @@ class LlamaDecoderLayer(nn.Module):
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
+            post_cat_attention_mask=post_cat_attention_mask,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -1484,6 +1491,10 @@ class LlamaModel(LlamaPreTrainedModel):
 
                     hidden_states = self.integrate_crv(hidden_states, layer_idx)
 
+                    post_cat_attention_mask = self.create_post_cat_attention_mask(
+                        causal_mask, hidden_states
+                    )
+
                 # print(f"hidden_states shape at {layer_idx}", hidden_states.shape)
                 # end modify
                 layer_outputs = decoder_layer(
@@ -1495,6 +1506,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
+                    post_cat_attention_mask=None,
                 )
 
             hidden_states = layer_outputs[0]
@@ -1528,7 +1540,7 @@ class LlamaModel(LlamaPreTrainedModel):
             attentions=all_self_attns,
         )
 
-    def integrate_crv(self, hidden_states, layer_idx):
+    def integrate_crv(self, hidden_states, attention_mask, layer_idx):
         # self.layer_crv = self.crv[layer_idx + 15] # this works fine and is quite interesting -> explore added depth to the model
         self.layer_crv = self.crv[
             self.crv_layers.index(layer_idx)
@@ -1543,8 +1555,21 @@ class LlamaModel(LlamaPreTrainedModel):
         original_h_shape = hidden_states.shape
         if self.post_concat:
             hidden_states = torch.cat([hidden_states, self.layer_crv], dim=1)
+            # crv_attention_mask = torch.ones(
+            #     (attention_mask.shape[0], self.layer_crv.shape[1]),
+            #     dtype=attention_mask.dtype,
+            #     device=attention_mask.device,
+            # )
+            # attention_mask = torch.cat([attention_mask, crv_attention_mask], dim=1)
         else:
             hidden_states = torch.cat([self.layer_crv, hidden_states], dim=1)
+
+            # crv_attention_mask = torch.ones(
+            #     (attention_mask.shape[0], self.layer_crv.shape[1]),
+            #     dtype=attention_mask.dtype,
+            #     device=attention_mask.device,
+            # )
+            # attention_mask = torch.cat([crv_attention_mask, attention_mask], dim=1)
 
         new_h_shape = hidden_states.shape
         logger.info(
@@ -1559,6 +1584,27 @@ class LlamaModel(LlamaPreTrainedModel):
 
         self.is_crv_concatenated = True
         return hidden_states
+
+    def create_post_cat_attention_mask(self, original_mask, hidden_states):
+        batch_size, seq_length, _ = hidden_states.size()
+        device = original_mask.device
+
+        # Create a new mask for the additional tokens (CRVs)
+        additional_mask = torch.ones(
+            (batch_size, seq_length - original_mask.size(1)), device=device
+        )
+
+        # Concatenate the original mask with the additional mask
+        post_cat_mask = torch.cat([original_mask, additional_mask], dim=1)
+
+        # Ensure the mask is causal if needed
+        if self.is_causal:
+            causal_mask = torch.tril(
+                torch.ones((seq_length, seq_length), device=device)
+            )
+            post_cat_mask = post_cat_mask.unsqueeze(1) & causal_mask.unsqueeze(0)
+
+        return post_cat_mask
 
     def _update_causal_mask(
         self,

@@ -18,6 +18,8 @@ class CRVGenerator:
         self.seed = seed
         self.logger = logger
         self.max_length = max_length
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.model.config.pad_token_id = self.tokenizer.pad_token_id
 
     @staticmethod
     def set_seed(seed):
@@ -122,8 +124,9 @@ class CRVGenerator:
             encoded_inputs = self.tokenizer(
                 inputs,
                 max_length=self.max_length,
-                padding="max_length",
-                truncation=True,
+                padding=True,
+                # padding="max_length",
+                # truncation=True,
                 return_tensors="pt",
             )
             inputs = encoded_inputs["input_ids"].to(self.model.device)

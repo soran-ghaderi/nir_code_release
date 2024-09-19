@@ -15,6 +15,6 @@ CRV_SAVE_BATCH = 20
 #     32,
 # ]  # the hidden states include the input embedding layer therefore idx 0 is the embeds lyr
 
-CRV_LAYERS = [1, 10, 23, "orig"]
+CRV_LAYERS = [23, 1, 10, "orig"]
 USE_RICH = False
 logging_level = logging.ERROR

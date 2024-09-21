@@ -1464,6 +1464,7 @@ class LlamaModel(LlamaPreTrainedModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
+        post_cat_attention_mask = None
         for layer_idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -1506,7 +1507,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
-                    post_cat_attention_mask=None,
+                    post_cat_attention_mask=post_cat_attention_mask,
                 )
 
             hidden_states = layer_outputs[0]
@@ -1540,7 +1541,7 @@ class LlamaModel(LlamaPreTrainedModel):
             attentions=all_self_attns,
         )
 
-    def integrate_crv(self, hidden_states, attention_mask, layer_idx):
+    def integrate_crv(self, hidden_states, layer_idx):
         # self.layer_crv = self.crv[layer_idx + 15] # this works fine and is quite interesting -> explore added depth to the model
         self.layer_crv = self.crv[
             self.crv_layers.index(layer_idx)

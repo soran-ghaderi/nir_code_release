@@ -1,0 +1,172 @@
+{
+  "builder_name": "parquet",
+  "citation": "",
+  "config_name": "Meta-Llama-3.1-8B-Instruct-evals__human_eval__details",
+  "dataset_name": "meta-llama-3.1-8_b-instruct-evals",
+  "dataset_size": 671976,
+  "description": "",
+  "download_checksums": {
+    "hf://datasets/meta-llama/Meta-Llama-3.1-8B-Instruct-evals@0f783b11d6240fc4f669dd95a842173b036e6799/Meta-Llama-3.1-8B-Instruct-evals/Details_human_eval_2024-07-22T22-34-57.325405.parquet.gzip": {
+      "num_bytes": 189046,
+      "checksum": null
+    }
+  },
+  "download_size": 189046,
+  "features": {
+    "task_type": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "task_name": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "subtask_name": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "input_question": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "input_choice_list": {
+      "dtype": "null",
+      "_type": "Value"
+    },
+    "input_final_prompts": {
+      "feature": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    },
+    "input_correct_responses": {
+      "feature": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    },
+    "output_prediction_text": {
+      "feature": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    },
+    "output_parsed_answer": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "output_choice_completions": {
+      "dtype": "null",
+      "_type": "Value"
+    },
+    "output_choice_negative_log_likelihoods": {
+      "dtype": "null",
+      "_type": "Value"
+    },
+    "output_metrics": {
+      "compiles@1": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "pass@1": {
+        "dtype": "float64",
+        "_type": "Value"
+      }
+    },
+    "is_correct": {
+      "dtype": "bool",
+      "_type": "Value"
+    },
+    "input_question_hash": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "input_final_prompts_hash": {
+      "feature": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    },
+    "benchmark_label": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "eval_config": {
+      "max_gen_len": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "max_prompt_len": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "num_few_shot": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "num_generations": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "prompt_fn": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "return_logprobs": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "seed": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "temperature": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "top_k": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "top_p": {
+        "dtype": "string",
+        "_type": "Value"
+      }
+    },
+    "context": {
+      "feature": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    },
+    "query": {
+      "feature": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    }
+  },
+  "homepage": "",
+  "license": "",
+  "size_in_bytes": 861022,
+  "splits": {
+    "latest": {
+      "name": "latest",
+      "num_bytes": 671976,
+      "num_examples": 164,
+      "dataset_name": "meta-llama-3.1-8_b-instruct-evals"
+    }
+  },
+  "version": {
+    "version_str": "0.0.0",
+    "major": 0,
+    "minor": 0,
+    "patch": 0
+  }
+}

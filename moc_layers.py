@@ -1596,7 +1596,7 @@ class LlamaModel(LlamaPreTrainedModel):
         )
 
         # Concatenate the original mask with the additional mask
-        post_cat_mask = torch.cat([original_mask, additional_mask], dim=1)
+        post_cat_mask = torch.cat([additional_mask, original_mask], dim=1)
 
         # Ensure the mask is causal if needed
         if self.is_causal:

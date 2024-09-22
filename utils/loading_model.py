@@ -34,6 +34,7 @@ class CustomTransformerLoader:
         self.tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path, use_auth_token=hf_token
         )
+        self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # Load the model

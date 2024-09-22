@@ -886,6 +886,7 @@ class LlamaSdpaAttention(LlamaAttention):
         position_embeddings: Optional[
             Tuple[torch.Tensor, torch.Tensor]
         ] = None,  # will become mandatory in v4.45
+        post_cat_attention_mask: Optional = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         if output_attentions:
@@ -894,6 +895,10 @@ class LlamaSdpaAttention(LlamaAttention):
                 "LlamaModel is using LlamaSdpaAttention, but `torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to the manual attention implementation, "
                 'but specifying the manual implementation will be required from Transformers version v5.0.0 onwards. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
             )
+            if post_cat_attention_mask is not None and not torch.equal(
+                attention_mask, post_cat_attention_mask
+            ):
+                attention_mask = post_cat_attention_mask
             return super().forward(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
@@ -1063,6 +1068,7 @@ class LlamaDecoderLayer(nn.Module):
         position_embeddings: Optional[
             Tuple[torch.Tensor, torch.Tensor]
         ] = None,  # will become mandatory in v4.45
+        post_cat_attention_mask: Optional = None,
         **kwargs,
     ) -> Tuple[
         torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
@@ -1104,6 +1110,7 @@ class LlamaDecoderLayer(nn.Module):
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
+            post_cat_attention_mask=post_cat_attention_mask,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -1343,9 +1350,11 @@ class LlamaModel(LlamaPreTrainedModel):
         self.crv_end_pos = end_pos
         # set this flag back to false so it can append the input crv
         self.is_crv_concatenated = False
-        print(f"Set CRV with shape {crv.shape} at layer {layer_idx}")
-        print(f"CRV layers: {crv_layers}")
-        print(f"Concat positions: start={start_pos}, end={end_pos}")
+        logger.info(
+            f"Set CRV with shape {crv.shape} at layer {layer_idx}"
+            f"CRV layers: {crv_layers}"
+            f"Concat positions: start={start_pos}, end={end_pos}"
+        )
 
     def set_post_concat_crv(self, post_concat: bool = True):
         self.post_concat = post_concat
@@ -1455,6 +1464,7 @@ class LlamaModel(LlamaPreTrainedModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
+        post_cat_attention_mask = None
         for layer_idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -1482,6 +1492,10 @@ class LlamaModel(LlamaPreTrainedModel):
 
                     hidden_states = self.integrate_crv(hidden_states, layer_idx)
 
+                    post_cat_attention_mask = self.create_post_cat_attention_mask(
+                        causal_mask, hidden_states
+                    )
+
                 # print(f"hidden_states shape at {layer_idx}", hidden_states.shape)
                 # end modify
                 layer_outputs = decoder_layer(
@@ -1493,6 +1507,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
+                    post_cat_attention_mask=post_cat_attention_mask,
                 )
 
             hidden_states = layer_outputs[0]
@@ -1532,27 +1547,65 @@ class LlamaModel(LlamaPreTrainedModel):
             self.crv_layers.index(layer_idx)
         ]  # first find the the index of
         # layer_idx in the crv_layers, then retrive the value of that index in the self.crv
+
         self.layer_crv = self.layer_crv.unsqueeze(0)  # Add a dimension at index 0
-        print("shape of the new layer_crv: ", self.layer_crv.shape)
-        print(
-            "cat al layers (saved layers idx, and model idx): ",
-            self.crv_layers.index(layer_idx),
-            layer_idx,
-        )
-        # print("concating ... ")
+        # self.layer_crv = self.layer_crv.unsqueeze(0).expand(
+        #     hidden_states.shape[0], -1, -1
+        # )
         self.layer_crv = self.layer_crv.to(hidden_states.device)
-        print(
-            f"hidden states before cat at layer {layer_idx}: ",
-            hidden_states.shape,
-        )
-        # hidden_states = torch.cat([hidden_states, self.layer_crv[:, :50, :]], dim=1)
+        original_h_shape = hidden_states.shape
         if self.post_concat:
             hidden_states = torch.cat([hidden_states, self.layer_crv], dim=1)
+            # crv_attention_mask = torch.ones(
+            #     (attention_mask.shape[0], self.layer_crv.shape[1]),
+            #     dtype=attention_mask.dtype,
+            #     device=attention_mask.device,
+            # )
+            # attention_mask = torch.cat([attention_mask, crv_attention_mask], dim=1)
         else:
             hidden_states = torch.cat([self.layer_crv, hidden_states], dim=1)
-        print("hidden states after cat: ", hidden_states.shape)
+
+            # crv_attention_mask = torch.ones(
+            #     (attention_mask.shape[0], self.layer_crv.shape[1]),
+            #     dtype=attention_mask.dtype,
+            #     device=attention_mask.device,
+            # )
+            # attention_mask = torch.cat([crv_attention_mask, attention_mask], dim=1)
+
+        new_h_shape = hidden_states.shape
+        logger.info(
+            f"concatenation layer index:"
+            f"\n\t\tspecified-layers list idx: {self.crv_layers.index(layer_idx)},"
+            f"\n\t\tmodel's hidden_states idx: {layer_idx}"
+            f"the shape of hidden states and the CRVs"
+            f"\nshape of the new layer_crv: {self.layer_crv.shape}"
+            f"\nbefore concatenation at layer {layer_idx}: {original_h_shape}"
+            f"\nafter concatenation at layer {layer_idx}: {new_h_shape}"
+        )
+
         self.is_crv_concatenated = True
         return hidden_states
+
+    def create_post_cat_attention_mask(self, original_mask, hidden_states):
+        batch_size, seq_length, _ = hidden_states.size()
+        device = original_mask.device
+
+        # Create a new mask for the additional tokens (CRVs)
+        additional_mask = torch.ones(
+            (batch_size, seq_length - original_mask.size(1)), device=device
+        )
+
+        # Concatenate the original mask with the additional mask
+        post_cat_mask = torch.cat([additional_mask, original_mask], dim=1)
+
+        # Ensure the mask is causal if needed
+        if self.is_causal:
+            causal_mask = torch.tril(
+                torch.ones((seq_length, seq_length), device=device)
+            )
+            post_cat_mask = post_cat_mask.unsqueeze(1) & causal_mask.unsqueeze(0)
+
+        return post_cat_mask
 
     def _update_causal_mask(
         self,
@@ -1642,7 +1695,6 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         self.model = LlamaModel(config, layers_to_concat=layers_to_concat)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        print("config: ", config)
         # Initialize weights and apply final processing
         self.post_init()
 

@@ -171,3 +171,12 @@ cython_debug/
 /old/temp_cross.py
 /old/utils.py
 /.idea/vcs.xml
+checkpoints
+checkpoints-old
+checkpoints/
+checkpoints-old/
+data
+data/
+/checkpoints-old/
+/checkpoints/
+/data/

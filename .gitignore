@@ -177,3 +177,6 @@ checkpoints/
 checkpoints-old/
 data
 data/
+/checkpoints-old/
+/checkpoints/
+/data/

@@ -895,10 +895,10 @@ class LlamaSdpaAttention(LlamaAttention):
                 "LlamaModel is using LlamaSdpaAttention, but `torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to the manual attention implementation, "
                 'but specifying the manual implementation will be required from Transformers version v5.0.0 onwards. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
             )
-            if post_cat_attention_mask is not None and not torch.equal(
-                attention_mask, post_cat_attention_mask
-            ):
-                attention_mask = post_cat_attention_mask
+            # if post_cat_attention_mask is not None and not torch.equal(
+            #     attention_mask, post_cat_attention_mask
+            # ):
+            #     attention_mask = post_cat_attention_mask
             return super().forward(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
@@ -1464,7 +1464,7 @@ class LlamaModel(LlamaPreTrainedModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
-        post_cat_attention_mask = None
+        post_cat_attention_mask = causal_mask
         for layer_idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -1492,9 +1492,9 @@ class LlamaModel(LlamaPreTrainedModel):
 
                     hidden_states = self.integrate_crv(hidden_states, layer_idx)
 
-                    post_cat_attention_mask = self.create_post_cat_attention_mask(
-                        causal_mask, hidden_states
-                    )
+                    # post_cat_attention_mask = self.create_post_cat_attention_mask(
+                    #     causal_mask, hidden_states
+                    # )
 
                 # print(f"hidden_states shape at {layer_idx}", hidden_states.shape)
                 # end modify

@@ -351,25 +351,14 @@ def check_function_name_consistency(test_cases: str, generated_function: str) ->
     generated_func_name = extract_function_name(generated_function)
 
     if test_func_name and generated_func_name:
-        print("yes equal: ", test_func_name, generated_func_name)
+        if test_func_name == generated_func_name:
+            print("yes equal: ", test_func_name, generated_func_name)
+        else:
+            print(f"not equal: tests; {test_cases}\ngens: {generated_func_name}")
         return float(test_func_name == generated_func_name)
 
     print("were not equal: ", test_func_name, generated_func_name)
     return 0.0
-
-
-# def function_name_consistency(query: str, test_cases: str) -> float:
-#     func_name = extract_function_name(test_cases)
-#     func_name_match = func_name in query
-#     print(func_name_match)
-#     if not func_name_match:
-#         return 0.0
-#     func_name = func_name_match.group(1)
-#     query_words = set(query.lower().split())
-#     func_name_words = set(re.findall(r"[a-z]+", func_name.lower()))
-#     return len(query_words.intersection(func_name_words)) / len(
-#         query_words.union(func_name_words)
-#     )
 
 
 def code_length(func: str) -> dict:
@@ -387,7 +376,13 @@ def comment_analysis(func: str) -> dict:
 
 
 def calculate_metrics(row: pd.Series, layer_idx: str) -> dict:
-    func = row[f"extracted_functions_{layer_idx}"]
+    # func = row[f"extracted_functions_{layer_idx}"]
+    func = row[f"final_output_{layer_idx}"]
+    func = row[f"final_output_{layer_idx}"]
+    if func:
+        print("func: ", func)
+        print("func: ", row["test_cases"])
+        print("=" * 100)
     if pd.isna(func):
         return {
             f"{metric}_{layer_idx}": np.nan
@@ -410,7 +405,10 @@ def calculate_metrics(row: pd.Series, layer_idx: str) -> dict:
                 "effort",
             ]
         }
-
+    print(
+        f"for layer idx {layer_idx}: ",
+        check_function_name_consistency(row["test_cases"], func),
+    )
     metrics = {
         f"syntactic_correctness_{layer_idx}": int(syntactic_correctness(func)),
         f"cyclomatic_complexity_{layer_idx}": cyclomatic_complexity(func),
@@ -458,6 +456,9 @@ def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         )
 
         metrics = new_df.apply(lambda row: calculate_metrics(row, layer_idx), axis=1)
+        # metrics = pd.DataFrame(
+        #     [calculate_metrics(row, layer_idx) for _, row in new_df.iterrows()]
+        # )
         for metric in metrics.iloc[0].keys():
             new_df[metric] = metrics.apply(lambda x: x[metric])
 
@@ -467,6 +468,9 @@ def process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 # Load the original DataFrame
 df = pd.read_csv("structured_checkpoint_data.csv")
 
+col = df["extracted_functions_orig"]
+print("len here:", "smallest_missing" in col)
+# find_Average_Of_Cube
 # Process the DataFrame and add new metrics
 new_df = process_dataframe(df)
 

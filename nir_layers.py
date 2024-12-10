@@ -36,7 +36,7 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 
-from rich import print
+# from rich import print
 from utils import set_seed, logger
 
 logger = logger()
@@ -733,7 +733,7 @@ class LlamaSdpaAttention1(LlamaAttention):  # fixme
     """
 
     # hf_model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
-    # hf_token = "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"
+    # hf_token = "your token"
     # config = AutoConfig.from_pretrained(hf_model_path, use_auth_token=hf_token)
 
     # Adapted from LlamaAttention.forward

@@ -6,7 +6,6 @@ from typing import List
 import numpy as np
 import pandas as pd
 import torch
-from rich.logging import RichHandler
 from datasets import Dataset
 
 import configs
@@ -24,6 +23,7 @@ def set_seed(seed):
 
 def logger():
     if configs.USE_RICH:
+        from rich.logging import RichHandler
         logging.basicConfig(
             level=configs.logging_level,
             format="%(message)s",

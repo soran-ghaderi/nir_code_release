@@ -1,32 +1,20 @@
 import re
-from collections import defaultdict
 
 from transformers import AutoConfig
-from datasets import load_from_disk
 
-from datasets import load_from_disk, Dataset
-from datasets import load_dataset
+from datasets import Dataset
 
 from tqdm import tqdm
 
-import pandas as pd
-from typing import List, Dict, Any
+from typing import List, Dict
 import pandas as pd
 from collections import defaultdict
-import logging
 import traceback
 import configs
-from controller.memory_manager import MemoryManager
-from data_processor.data_loader import GSM8KDataset
 from framework_with_template import AdvancedLLaMACRVFramework
-from generator.crv_generator import CRVGenerator
-from generator.text_generator import TextGenerator
 
-from retrieve.cosine_similarity import CRVRetriever
-from retrieve.dnc import DNMemory
-from utils import set_seed, logger
+from utils import logger
 from utils import (
-    extract_test_cases,
     extract_functions,
     extract_sections,
     add_parsed_functions_to_dataset,
@@ -34,8 +22,6 @@ from utils import (
 
 from utils.loading_model import CustomTransformerLoader
 import torch
-import torch.multiprocessing as mp
-
 
 # from rich import print
 # from rich.console import Console
@@ -53,7 +39,7 @@ model_urls = {
 }
 model_path = model_urls["llama31"]
 tokenizer_path = model_path
-hf_token = "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"
+hf_token = "your token"
 
 config = AutoConfig.from_pretrained(model_path, use_auth_token=hf_token)
 

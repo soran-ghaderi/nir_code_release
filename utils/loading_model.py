@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 import torch
 from transformers import AutoTokenizer
 
-from moc_layers import LlamaForCausalLM
+from nir_layers import LlamaForCausalLM
 
 
 class CustomTransformerLoader:

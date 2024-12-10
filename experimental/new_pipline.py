@@ -1,6 +1,6 @@
 from transformers import AutoConfig
 import configs
-from controller.memory_manager import MemoryManager
+from experimental.controller.memory_manager import MemoryManager
 from data_processor.data_loader import GSM8KDataset
 from generator.crv_generator import CRVGenerator
 from generator.text_generator import TextGenerator
@@ -9,8 +9,8 @@ from retrieve.cosine_similarity import CRVRetriever
 from utils import logger
 from utils.loading_model import CustomTransformerLoader
 
-from rich import print
-from rich.console import Console
+# from rich import print
+# from rich.console import Console
 
 console = Console()
 
@@ -29,7 +29,7 @@ def main():
     }
     model_path = model_urls["llama31"]
     tokenizer_path = model_path
-    hf_token = "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"
+    hf_token = "your token"
     config = AutoConfig.from_pretrained(model_path, use_auth_token=hf_token)
 
     console.rule("[bold red]Loading the Model")

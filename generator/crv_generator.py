@@ -3,7 +3,6 @@ from typing import Union, Optional, List, Tuple
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-import configs
 from configs import SUBSET_SIZE
 from data_processor.data_loader import GSM8KDataset
 from utils import logger

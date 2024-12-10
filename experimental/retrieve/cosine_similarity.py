@@ -2,7 +2,6 @@ import io
 from typing import Union, List, Dict, Tuple
 
 import torch
-from sympy.polys.polyconfig import query
 from torch.nn import functional as F
 
 from generator.crv_generator import CRVGenerator

@@ -85,7 +85,7 @@ ipython_config.py
 # pyenv
 #   For a library or package, you might want to ignore these files since the code is
 #   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+.python-version
 
 # pipenv
 #   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
@@ -163,13 +163,13 @@ cython_debug/
 /.idea/.gitignore
 /.idea/.name
 /dummy.py
-/old/main_old.py
+/experimental/main_old.py
 /.idea/misc.xml
 /.idea/moc.iml
 /.idea/modules.xml
 /.idea/inspectionProfiles/profiles_settings.xml
-/old/temp_cross.py
-/old/utils.py
+/experimental/temp_cross.py
+/experimental/utils.py
 /.idea/vcs.xml
 checkpoints
 checkpoints-old

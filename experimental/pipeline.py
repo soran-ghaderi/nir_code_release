@@ -17,7 +17,7 @@ import zstandard as zstd
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from moc_layers import LlamaSdpaAttention, LlamaForCausalLM
+from nir_layers import LlamaSdpaAttention, LlamaForCausalLM
 
 # Constants
 MAX_LENGTH = 512
@@ -364,7 +364,7 @@ def main():
     # Load model and tokenizer
     hf_model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
     hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B-Instruct"
-    hf_token = "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"
+    hf_token = "your token"
     config = AutoConfig.from_pretrained(hf_model_path, use_auth_token=hf_token)
     model, tokenizer = load_custom_transformer(
         hf_model_path, hf_tokenizer_path, config=config, hf_token=hf_token

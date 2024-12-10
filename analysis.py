@@ -8,7 +8,6 @@ from collections import defaultdict
 
 layer_indices = [1, 10, 23, "orig"]
 
-
 subset_name = "processed_Meta-Llama-3.1-8B-Instruct-evals__mbpp__details_results"
 
 dataset = load_from_disk(f"data/{subset_name}")
@@ -74,9 +73,9 @@ def find_last_checkpoints(directory, layer):
 #     return stats
 #
 #
-# checkpoint_dir = "checkpoints-old"
+# checkpoint_dir = "checkpoints-experimental"
 # last_file = find_last_checkpoints(checkpoint_dir, "orig")
-# path = f"checkpoints-old/{last_file}"
+# path = f"checkpoints-experimental/{last_file}"
 # extract_json_data(path)
 
 
@@ -107,7 +106,7 @@ def extract_json_data(filename):
     return pd.DataFrame(df_data)
 
 
-checkpoint_dir = "checkpoints-old"
+checkpoint_dir = "checkpoints-experimental"
 last_file = find_last_checkpoints(checkpoint_dir, "orig")
 print("last file: ", last_file)
 path = f"{checkpoint_dir}/{last_file}"
@@ -117,6 +116,7 @@ print(df.head())
 print(df.info())
 
 df.to_csv("structured_checkpoint_data.csv", index=False)
+
 
 #  ========================================================================
 
@@ -154,8 +154,8 @@ def process_dataframe(df):
         extracted_functions_col = f"extracted_functions_{idx}"
 
         if (
-            final_output_col in new_df.columns
-            and extracted_functions_col in new_df.columns
+                final_output_col in new_df.columns
+                and extracted_functions_col in new_df.columns
         ):
             imports = new_df[final_output_col].apply(extract_imports)
             functions = new_df[final_output_col].apply(extract_python_function)
@@ -178,7 +178,6 @@ import numpy as np
 from typing import List, Callable
 import ast
 import re
-
 
 # def code_correctness(func: str, test_cases: str) -> float:
 #     # Placeholder for code execution and test case validation
@@ -431,16 +430,16 @@ def calculate_metrics(row: pd.Series, layer_idx: str) -> dict:
             {
                 f"{k}_{layer_idx}": np.nan
                 for k in [
-                    "h1",
-                    "h2",
-                    "N1",
-                    "N2",
-                    "vocabulary",
-                    "length",
-                    "volume",
-                    "difficulty",
-                    "effort",
-                ]
+                "h1",
+                "h2",
+                "N1",
+                "N2",
+                "vocabulary",
+                "length",
+                "volume",
+                "difficulty",
+                "effort",
+            ]
             }
         )
 

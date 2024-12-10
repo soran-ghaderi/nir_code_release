@@ -8,7 +8,7 @@ from transformers.models.paligemma.convert_paligemma_weights_to_hf import device
 from llama3_8b_test import (
     MoCSdpaAttention,
 )
-from moc_layers import LlamaSdpaAttention, LlamaForCausalLM
+from nir_layers import LlamaSdpaAttention, LlamaForCausalLM
 
 
 def load_custom_transformer(
@@ -248,7 +248,7 @@ def main():
 
     # hf_model_path = "meta-llama/Meta-Llama-3-8B"
     # hf_tokenizer_path = "meta-llama/Meta-Llama-3-8B"
-    hf_token = "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"
+    hf_token = "your token"
     config = AutoConfig.from_pretrained(hf_model_path, use_auth_token=hf_token)
     print(config)
     # Load the custom transformer model and tokenizer

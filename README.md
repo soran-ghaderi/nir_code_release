@@ -26,7 +26,7 @@
     author    = {Ghaderi, Soran},
     title     = {Neural Integration of Iterative Reasoning (NIR) in LLMs for Code Generation},
     school    = {University of Essex},
-    year      = {2024}
+    year      = {2024},
     type      = "Master's Thesis",
 }
 ```
